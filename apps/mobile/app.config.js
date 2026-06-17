@@ -2,7 +2,7 @@ const app = {
   expo: {
     name: 'Zevryl',
     slug: 'zevryl',
-    version: '0.1.10',
+    version: '0.1.11',
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'dark',
@@ -24,17 +24,17 @@ const app = {
     },
     android: {
       package: 'com.zevryl.mobile',
-      versionCode: 10,
+      versionCode: 11,
       usesCleartextTraffic: true,
       permissions: ['INTERNET', 'CAMERA', 'RECORD_AUDIO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VIDEO']
     },
     extra: {
-      apiUrl: ''
+      apiUrl: 'http://150.242.202.246:4100'
     }
   }
 };
 
-const apiUrl = process.env.EXPO_PUBLIC_API_URL || app.expo.extra?.apiUrl;
+const apiUrl = process.env.EXPO_PUBLIC_API_URL?.trim() || app.expo.extra?.apiUrl;
 
 module.exports = {
   expo: {

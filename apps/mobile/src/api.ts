@@ -7,6 +7,7 @@ const configuredUrl = normalizeApiUrl(
     (Constants.expoConfig?.extra?.apiUrl as string | undefined) ||
     ''
 );
+const requestTimeoutMs = 7000;
 
 function normalizeApiUrl(url?: string) {
   const trimmed = url?.trim();
@@ -44,7 +45,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const accessToken = await token();
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
   let response: Response;
   try {
     response = await fetch(`${configuredUrl}${path}`, { ...init, headers, signal: controller.signal });
