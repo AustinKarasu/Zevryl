@@ -1,5 +1,4 @@
 import { Ionicons } from '@expo/vector-icons';
-import { LiveKitRoom, useTracks, VideoTrack } from '@livekit/react-native';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
@@ -29,6 +28,19 @@ type Loadable<T> = { loading: boolean; data: T; error?: string };
 
 const emptyFriends: FriendState = { friends: [], incoming: [], outgoing: [], blocked: [] };
 const emptyStats: DashboardStats = { users: 0, reports: 0, activeGroups: 0, systemHealth: 0 };
+type LiveKitNative = typeof import('@livekit/react-native');
+let liveKitNative: LiveKitNative | null | undefined;
+
+function getLiveKitNative() {
+  if (liveKitNative !== undefined) return liveKitNative;
+  try {
+    liveKitNative = require('@livekit/react-native') as LiveKitNative;
+    liveKitNative.registerGlobals();
+  } catch {
+    liveKitNative = null;
+  }
+  return liveKitNative;
+}
 
 export default function App() {
   return (
@@ -342,6 +354,17 @@ function ChatScreen({ user }: { user: User }) {
 }
 
 function CallRoom({ session, onLeave }: { session: { url: string; token: string; roomName: string }; onLeave: () => void }) {
+  const liveKit = getLiveKitNative();
+  if (!liveKit) {
+    return (
+      <GlassCard style={styles.callCard}>
+        <Text style={styles.cardTitle}>Calls unavailable</Text>
+        <Text style={styles.muted}>Voice and video could not start on this build. The chat app is still available.</Text>
+        <Pressable style={styles.logout} onPress={onLeave}><Text style={styles.logoutText}>Close</Text></Pressable>
+      </GlassCard>
+    );
+  }
+  const { LiveKitRoom } = liveKit;
   return (
     <GlassCard style={styles.callCard}>
       <Text style={styles.cardTitle}>Connected to {session.roomName}</Text>
@@ -354,7 +377,10 @@ function CallRoom({ session, onLeave }: { session: { url: string; token: string;
 }
 
 function CallTracks() {
-  const tracks = useTracks([Track.Source.Camera], { onlySubscribed: false });
+  const liveKit = getLiveKitNative();
+  if (!liveKit) return <Text style={styles.muted}>Video module unavailable.</Text>;
+  const tracks = liveKit.useTracks([Track.Source.Camera], { onlySubscribed: false });
+  const VideoTrack = liveKit.VideoTrack;
   return (
     <View style={styles.videoGrid}>
       {tracks.length === 0 ? <Text style={styles.muted}>Waiting for video...</Text> : tracks.map(trackRef => <VideoTrack key={trackRef.publication?.trackSid ?? trackRef.participant.identity} trackRef={trackRef} style={styles.videoTile} objectFit="cover" />)}
