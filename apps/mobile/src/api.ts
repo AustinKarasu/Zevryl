@@ -75,6 +75,20 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function requestText(path: string, init: RequestInit = {}): Promise<string> {
+  if (!configuredUrl) throw new ApiError(0, 'Backend API URL is not configured for this build.');
+  const headers = new Headers(init.headers);
+  const accessToken = await token();
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
+  const response = await fetch(`${configuredUrl}${path}`, { ...init, headers });
+  if (!response.ok) {
+    let message = 'Something went wrong. Please try again.';
+    try { message = (await response.json()).message || message; } catch { message = await response.text() || message; }
+    throw new ApiError(response.status, message);
+  }
+  return response.text();
+}
+
 export const api = {
   url: configuredUrl ?? 'Not configured',
   login: (emailOrUsername: string, password: string, twoFactorCode?: string) =>
@@ -90,6 +104,8 @@ export const api = {
   me: () => request<User>('/me'),
   updateProfile: (payload: Partial<Pick<User, 'displayName' | 'bio' | 'pronouns' | 'customStatus' | 'profileColor' | 'profileTheme' | 'avatarUrl' | 'bannerUrl' | 'presence'>>) =>
     request<User>('/me/profile', { method: 'PATCH', body: JSON.stringify(payload) }),
+  updateAccount: (payload: { username?: string; discriminator?: string; mobile?: string; alternateEmail?: string }) =>
+    request<User>('/me/account', { method: 'PATCH', body: JSON.stringify(payload) }),
   updatePrivacy: (payload: { dmPolicy: 'everyone' | 'friends' | 'none'; profileLinks: boolean }) =>
     request<User>('/me/privacy', { method: 'PATCH', body: JSON.stringify(payload) }),
   setup2fa: () => request<{ secret: string; otpauthUrl: string; qrUrl: string }>('/me/2fa/setup', { method: 'POST' }),
@@ -132,6 +148,12 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ roomName, canPublish: true, canSubscribe: true })
   }),
+  registerPushToken: (token: string, platform: string) => request('/notifications/register', { method: 'POST', body: JSON.stringify({ token, platform }) }),
+  downloadConversation: (conversationId: string) => requestText(`/conversations/${conversationId}/download`),
+  updateTicket: (id: string, payload: { status?: Ticket['status']; note?: string; action?: 'claim' | 'close' | 'reopen' | 'delete' | 'ban' }) =>
+    request<Ticket>(`/tickets/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteTicket: (id: string) => request(`/tickets/${id}`, { method: 'DELETE' }),
+  downloadTicket: (id: string) => requestText(`/tickets/${id}/download`),
   adminStats: () => request<DashboardStats>('/admin/stats'),
   adminAnnouncements: () => request<Announcement[]>('/admin/announcements'),
   createAnnouncement: (payload: { title: string; body: string; isPopup: boolean; pinToHome: boolean; imageUrl?: string; linkUrl?: string; linkLabel?: string }) =>
@@ -144,5 +166,8 @@ export const api = {
     request<User>('/admin/badges/grant', { method: 'POST', body: JSON.stringify(payload) }),
   setRole: (payload: { username: string; role: User['role'] }) =>
     request<User>('/admin/users/role', { method: 'POST', body: JSON.stringify(payload) }),
+  updateUser: (payload: { username: string; newUsername?: string; discriminator?: string; mobile?: string; alternateEmail?: string; resetUsernameLimit?: boolean }) =>
+    request<User>('/admin/users/update', { method: 'POST', body: JSON.stringify(payload) }),
+  exportUsers: () => requestText('/admin/users/export'),
   reports: () => request<{ reports: Report[]; tickets: Ticket[] }>('/staff/reports')
 };

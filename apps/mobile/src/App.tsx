@@ -1,9 +1,15 @@
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
+import * as Device from 'expo-device';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
+import * as LocalAuthentication from 'expo-local-authentication';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as Notifications from 'expo-notifications';
+import * as Sharing from 'expo-sharing';
+import * as Clipboard from 'expo-clipboard';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -69,6 +75,12 @@ const profileThemes: Record<NonNullable<User['profileTheme']>, { label: string; 
   ocean: { label: 'Ocean', color: '#4B7C8C', colors: ['#101518', '#15232A', '#172D34'] },
   mono: { label: 'Mono', color: '#AEB8A5', colors: ['#111111', '#1C1C1C', '#282828'] }
 };
+const colorChoices = [
+  '#EF4444', '#F97316', '#F59E0B', '#EAB308', '#84CC16', '#22C55E',
+  '#14B8A6', '#06B6D4', '#0EA5E9', '#3B82F6', '#6366F1', '#8B5CF6',
+  '#A855F7', '#D946EF', '#EC4899', '#F43F5E', '#58764A', '#7B6F45',
+  '#8C5E3C', '#4B6D78', '#AEB8A5', '#F4F0E6', '#111712', '#000000'
+];
 const gifs = [
   'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExb2d4MzgzdTBqOWc3eGxxZGNzYnRydjF0dDhtczlmbzhmOWUwajU2MiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/111ebonMs90YLu/giphy.gif',
   'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExZmRnOWlzZ2l3enV4Mmpyc2t6Zm82dzV5N2Vzd3NlNXQ2Ynpmb3pyNCZlcD12MV9naWZzX3NlYXJjaCZjdD1n/l0HlNaQ6gWfllcjDO/giphy.gif',
@@ -109,6 +121,14 @@ function Root() {
       .finally(() => setTimeout(() => setBooting(false), 550));
   }, []);
 
+  useEffect(() => {
+    if (!user || !Device.isDevice) return;
+    Notifications.requestPermissionsAsync()
+      .then((result: any) => result.granted || result.status === 'granted' ? Notifications.getExpoPushTokenAsync() : null)
+      .then(tokenResult => tokenResult?.data ? api.registerPushToken(tokenResult.data, Platform.OS) : null)
+      .catch(() => undefined);
+  }, [user?.id]);
+
   async function completeAuth(nextUser: User, accessToken: string, refreshToken: string) {
     await setTokens(accessToken, refreshToken);
     setUser(nextUser);
@@ -122,7 +142,7 @@ function Root() {
   if (!user) return <AuthScreen onDone={completeAuth} notify={showNotice} notice={notice} />;
 
   return (
-    <TerraShell>
+    <TerraShell theme={user.profileTheme}>
       <SafeAreaView style={styles.app}>
         <Header user={user} setTab={setTab} />
         <View style={styles.content}>
@@ -169,14 +189,15 @@ function renderTab(
   if (tab === 'profile') return <ProfileScreen user={user} setUser={tools.setUser} notify={tools.notify} />;
   if (tab === 'settings') return <SettingsScreen user={user} setTab={tools.setTab} setUser={tools.setUser} notify={tools.notify} />;
   if (tab === 'tickets') return <TicketScreen user={user} notify={tools.notify} />;
-  if (tab === 'admin') return <AdminScreen setAnnouncement={tools.setAnnouncement} setShowAnnouncement={tools.setShowAnnouncement} notify={tools.notify} />;
+  if (tab === 'admin') return <AdminScreen setAnnouncement={tools.setAnnouncement} setShowAnnouncement={tools.setShowAnnouncement} setTab={tools.setTab} notify={tools.notify} />;
   if (tab === 'staff') return <StaffScreen notify={tools.notify} />;
   return null;
 }
 
-function TerraShell({ children }: { children: React.ReactNode }) {
+function TerraShell({ children, theme = 'terria' }: { children: React.ReactNode; theme?: User['profileTheme'] }) {
+  const colors = profileThemes[theme || 'terria'].colors;
   return (
-    <LinearGradient colors={['#111712', '#19221A', '#2A2118']} style={styles.shell}>
+    <LinearGradient colors={colors} style={styles.shell}>
       <View style={styles.terraBandTop} />
       <View style={styles.terraBandBottom} />
       {children}
@@ -384,6 +405,16 @@ function GroupsScreen({ notify }: { notify: (tone: 'error' | 'success' | 'info',
       .then(() => { setName(''); setDescription(''); setSelected([]); notify('success', 'Group created.'); load(); })
       .catch(error => notify('error', error.message));
   }
+  async function ticketAction(ticket: Ticket, action: 'close' | 'reopen') {
+    await api.updateTicket(ticket.id, { action })
+      .then(load)
+      .catch(error => notify('error', error.message));
+  }
+  async function download(ticket: Ticket) {
+    await api.downloadTicket(ticket.id)
+      .then(text => shareTextFile(`zevryl-ticket-${ticket.id}.txt`, text, notify))
+      .catch(error => notify('error', error.message));
+  }
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
@@ -412,11 +443,14 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
   const [body, setBody] = useState('');
   const [showEmoji, setShowEmoji] = useState(false);
   const [showGif, setShowGif] = useState(false);
+  const [emojiSearch, setEmojiSearch] = useState('');
+  const [gifSearch, setGifSearch] = useState('');
   const [search, setSearch] = useState('');
   const [pinnedOnly, setPinnedOnly] = useState(false);
   const [profileUser, setProfileUser] = useState<User | null>(null);
   const [reportReason, setReportReason] = useState('');
   const [reportProof, setReportProof] = useState('');
+  const messageScrollRef = useRef<ScrollView | null>(null);
 
   const loadConversations = () => api.conversations()
     .then(data => {
@@ -430,6 +464,10 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
     if (!selected) return;
     api.messages(selected.id, { q: search, pinned: pinnedOnly }).then(setMessages).catch(error => notify('error', error.message));
   }, [selected?.id, pinnedOnly]);
+
+  useEffect(() => {
+    requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: true }));
+  }, [messages.length, selected?.id]);
 
   const refreshMessages = () => selected && api.messages(selected.id, { q: search, pinned: pinnedOnly }).then(setMessages).catch(error => notify('error', error.message));
 
@@ -472,6 +510,18 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
       .catch(error => notify('error', error.message));
   }
 
+  async function copyMessage(message: Message) {
+    await Clipboard.setStringAsync(message.body || message.attachmentUrl || '');
+    notify('success', 'Message copied.');
+  }
+
+  async function editMessage(message: Message) {
+    if (message.senderId !== user.id) return;
+    Alert.prompt?.('Edit message', undefined, text => {
+      if (text?.trim()) api.editMessage(message.id, text).then(next => setMessages(prev => prev.map(item => item.id === next.id ? next : item))).catch(error => notify('error', error.message));
+    }, 'plain-text', message.body);
+  }
+
   async function dmAction(action: 'mute' | 'block' | 'unfriend', hours?: number) {
     if (!selected) return;
     await api.conversationAction(selected.id, action, { hours })
@@ -487,15 +537,32 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
       .catch(error => notify('error', error.message));
   }
 
+  async function downloadChat() {
+    if (!selected) return;
+    await api.downloadConversation(selected.id)
+      .then(text => shareTextFile(`zevryl-chat-${selected.id}.csv`, text, notify))
+      .catch(error => notify('error', error.message));
+  }
+
+  async function startCall(kind: 'voice' | 'video') {
+    if (!selected) return;
+    await api.callToken(`${kind}-${selected.id}`)
+      .then(() => notify('success', `${kind === 'voice' ? 'Voice' : 'Video'} room is ready. LiveKit UI module is required for media rendering.`))
+      .catch(error => notify('error', error.message));
+  }
+
+  const emojiChoices = emojis.filter(item => !emojiSearch.trim() || item.includes(emojiSearch.trim()));
+  const gifChoices = gifs.filter(item => !gifSearch.trim() || item.toLowerCase().includes(gifSearch.trim().toLowerCase()));
+
   return (
-    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={Platform.OS === 'ios' ? 84 : 22} style={styles.flex}>
       <View style={styles.chatLayout}>
         {!selected ? (
           <ScrollView contentContainerStyle={styles.dmListFull}>
             <SectionTitle title="Direct Messages" action="Refresh" onPress={loadConversations} />
             {conversations.loading ? <LoadingState /> : conversations.data.length === 0 ? <EmptyState title="No DMs" body="Open Friends and start a DM." /> : conversations.data.map(item => (
               <Pressable key={item.id} style={styles.dmCard} onPress={() => setSelected(item)}>
-                <View style={styles.avatar}><Text style={styles.avatarText}>{item.title.slice(0, 1)}</Text></View>
+                {item.participants.find(p => p.id !== user.id) ? <UserAvatar user={item.participants.find(p => p.id !== user.id)!} /> : <View style={styles.avatar}><Text style={styles.avatarText}>{item.title.slice(0, 1)}</Text></View>}
                 <View style={styles.flex}>
                   <Text style={styles.dmTitle}>{item.title}</Text>
                   <Text style={styles.meta} numberOfLines={1}>{item.mutedUntil ? 'Muted · ' : ''}{item.lastMessage?.body || item.subtitle || 'No messages yet'}</Text>
@@ -512,34 +579,36 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
               <Text style={styles.cardTitle}>{selected.title}</Text>
               <Text style={styles.meta}>Private DM</Text>
             </View>
-            <IconButton icon="call" onPress={() => notify('info', 'Voice call setup is ready for LiveKit configuration.')} />
-            <IconButton icon="videocam" onPress={() => notify('info', 'Video call setup is ready for LiveKit configuration.')} />
+            <IconButton icon="call" onPress={() => startCall('voice')} />
+            <IconButton icon="videocam" onPress={() => startCall('video')} />
+            <IconButton icon="download" onPress={downloadChat} />
           </View>
           <View style={styles.chatTools}>
             <TextInput style={styles.searchInput} placeholder="Search messages" placeholderTextColor="#899486" value={search} onChangeText={setSearch} onSubmitEditing={refreshMessages} />
             <IconButton icon="search" onPress={refreshMessages} />
             <IconButton icon={pinnedOnly ? 'pin' : 'pin-outline'} onPress={() => setPinnedOnly(prev => !prev)} />
           </View>
-          <ScrollView contentContainerStyle={styles.messageList}>
+          <ScrollView ref={messageScrollRef} contentContainerStyle={styles.messageList} keyboardShouldPersistTaps="handled" onContentSizeChange={() => messageScrollRef.current?.scrollToEnd({ animated: true })}>
             {messages.length === 0 ? <EmptyState title="No messages" body="Send the first message, emoji, sticker, GIF, or image." /> : messages.map(message => {
               const author = selected.participants.find(p => p.id === message.senderId) || user;
               const topBadge = topPriorityBadge(author.badges);
               return (
               <Pressable key={message.id} onLongPress={() => Alert.alert('Message', 'Choose an action', [{ text: message.pinned ? 'Unpin' : 'Pin', onPress: () => pin(message) }, ...(message.senderId === user.id ? [{ text: 'Delete', style: 'destructive' as const, onPress: () => remove(message) }] : []), { text: 'Cancel', style: 'cancel' }])} style={[styles.messageRow, message.senderId === user.id && styles.messageOwn]}>
-                <Pressable style={styles.messageAuthor} onPress={() => setProfileUser(author)}><Text style={styles.messageName}>@{author.tag || author.username}</Text>{topBadge ? <BadgeIcon badge={topBadge} /> : null}{message.pinned ? <Ionicons name="pin" size={11} color="#E6C07A" /> : null}</Pressable>
+                <Pressable style={styles.messageAuthor} onPress={() => setProfileUser(author)}><UserAvatar user={author} size={28} /><Text style={styles.messageName}>{author.displayName}</Text>{topBadge ? <BadgeIcon badge={topBadge} /> : null}<Text style={styles.messageTimeInline}>{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>{message.pinned ? <Ionicons name="pin" size={11} color="#E6C07A" /> : null}{message.isEdited ? <Text style={styles.editedTag}>edited</Text> : null}</Pressable>
                 <View style={[styles.messageBubble, message.senderId === user.id && styles.messageBubbleOwn]}>
                   {(message.type === 'gif' || message.type === 'image') && message.attachmentUrl ? <Image source={{ uri: message.attachmentUrl }} style={styles.chatImage} resizeMode="cover" /> : null}
-                  {message.body ? <Text style={styles.body}>{message.body}</Text> : null}
-                  <Text style={styles.meta}>{message.isEdited ? 'edited · ' : ''}{new Date(message.createdAt).toLocaleTimeString()}</Text>
+                  {message.body ? <RichText text={message.body} /> : null}
                 </View>
+                <View style={styles.messageActions}><Pressable onPress={() => copyMessage(message)}><Ionicons name="copy" size={14} color="#AEB8A5" /></Pressable>{message.senderId === user.id && <Pressable onPress={() => editMessage(message)}><Ionicons name="pencil" size={14} color="#AEB8A5" /></Pressable>}</View>
               </Pressable>
             );})}
           </ScrollView>
-          {showEmoji && <View style={styles.pickerRow}>{emojis.map(item => <Pressable key={item} style={styles.pickerButton} onPress={() => setBody(prev => `${prev}${item}`)}><Text style={styles.emojiText}>{item}</Text></Pressable>)}</View>}
-          {showGif && <View style={styles.gifPicker}>{gifs.map(item => <Pressable key={item} onPress={() => send({ type: 'gif', attachmentUrl: item, body: 'GIF' })}><Image source={{ uri: item }} style={styles.gifThumb} /></Pressable>)}</View>}
+          {showEmoji && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search emoji or use your keyboard for all emoji" placeholderTextColor="#899486" value={emojiSearch} onChangeText={setEmojiSearch} /> <View style={styles.pickerRow}>{emojiChoices.map(item => <Pressable key={item} style={styles.pickerButton} onPress={() => setBody(prev => `${prev}${item}`)}><Text style={styles.emojiText}>{item}</Text></Pressable>)}</View></View>}
+          {showGif && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search GIFs" placeholderTextColor="#899486" value={gifSearch} onChangeText={setGifSearch} /><View style={styles.gifPicker}>{gifChoices.map(item => <Pressable key={item} onPress={() => send({ type: 'gif', attachmentUrl: item, body: 'GIF' })}><Image source={{ uri: item }} style={styles.gifThumb} /></Pressable>)}</View></View>}
           <View style={styles.composer}>
             <IconButton icon="happy" onPress={() => { setShowEmoji(prev => !prev); setShowGif(false); }} />
-            <IconButton icon="add-circle" onPress={() => Alert.alert('Attach', 'Choose what to send', [{ text: 'Photo Library', onPress: () => pickChatImage(false) }, { text: 'Camera', onPress: () => pickChatImage(true) }, { text: 'GIFs', onPress: () => { setShowGif(prev => !prev); setShowEmoji(false); } }, { text: 'Cancel', style: 'cancel' }])} />
+            <IconButton icon="film" onPress={() => { setShowGif(prev => !prev); setShowEmoji(false); }} />
+            <IconButton icon="attach" onPress={() => Alert.alert('Upload', 'Choose media source', [{ text: 'Photo Library', onPress: () => pickChatImage(false) }, { text: 'Camera', onPress: () => pickChatImage(true) }, { text: 'Cancel', style: 'cancel' }])} />
             <TextInput style={styles.composerInput} placeholder="Message" placeholderTextColor="#899486" value={body} onChangeText={setBody} multiline />
             <IconButton icon="send" onPress={() => send()} />
           </View>
@@ -607,6 +676,10 @@ function ProfileScreen({ user, setUser, notify }: { user: User; setUser: (user: 
 
 function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: boolean; user: User; onClose: () => void; onSaved: (user: User) => void; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
   const [displayName, setDisplayName] = useState(user.displayName);
+  const [username, setUsername] = useState(user.username);
+  const [discriminator, setDiscriminator] = useState(user.discriminator);
+  const [mobile, setMobile] = useState(user.mobile || '');
+  const [alternateEmail, setAlternateEmail] = useState(user.alternateEmail || '');
   const [bio, setBio] = useState(user.bio);
   const [pronouns, setPronouns] = useState(user.pronouns || '');
   const [customStatus, setCustomStatus] = useState(user.customStatus || '');
@@ -622,6 +695,10 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
   useEffect(() => {
     if (visible) {
       setDisplayName(user.displayName);
+      setUsername(user.username);
+      setDiscriminator(user.discriminator);
+      setMobile(user.mobile || '');
+      setAlternateEmail(user.alternateEmail || '');
       setBio(user.bio);
       setPronouns(user.pronouns || '');
       setCustomStatus(user.customStatus || '');
@@ -686,7 +763,7 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
       }
       
       setBusy(true);
-      const updated = await api.updateProfile({ 
+      await api.updateProfile({ 
         displayName: displayName.trim(), 
         bio: bio || undefined, 
         pronouns: pronouns || undefined, 
@@ -696,6 +773,12 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
         presence, 
         avatarUrl: avatarUri || undefined, 
         bannerUrl: bannerUri || undefined 
+      });
+      const updated = await api.updateAccount({
+        username: username.trim(),
+        discriminator: discriminator.trim(),
+        mobile,
+        alternateEmail
       });
       
       notify('success', 'Profile updated successfully!');
@@ -745,6 +828,10 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
           <GlassCard>
             <Text style={styles.label}>Basic Information</Text>
             <Field icon="person" placeholder="Display name" value={displayName} onChangeText={setDisplayName} />
+            <Field icon="at" placeholder="Username" value={username} onChangeText={setUsername} autoCapitalize="none" />
+            <Field icon="keypad" placeholder="5-digit # (VIP required)" value={discriminator} onChangeText={setDiscriminator} keyboardType="number-pad" maxLength={5} />
+            <Field icon="call" placeholder="Mobile number" value={mobile} onChangeText={setMobile} keyboardType="phone-pad" />
+            <Field icon="mail" placeholder="Alternate email" value={alternateEmail} onChangeText={setAlternateEmail} autoCapitalize="none" keyboardType="email-address" />
             <Field icon="document-text" placeholder="Bio" value={bio} onChangeText={setBio} multiline />
             <Field icon="sparkles" placeholder="Pronouns" value={pronouns} onChangeText={setPronouns} />
             <Field icon="radio" placeholder="Custom status" value={customStatus} onChangeText={setCustomStatus} />
@@ -776,7 +863,7 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
           <GlassCard>
             <Text style={styles.label}>Profile Color</Text>
             <Text style={styles.muted}>Choose a color theme for your profile.</Text>
-            <View style={styles.colorRow}>{['#58764A', '#7B6F45', '#8C5E3C', '#4B6D78'].map(color => <Pressable key={color} style={[styles.colorDot, { backgroundColor: color }, profileColor === color && styles.colorDotActive]} onPress={() => setProfileColor(color)} />)}</View>
+            <ColorPicker value={profileColor} onChange={setProfileColor} />
           </GlassCard>
           
           <View style={styles.modalActions}>
@@ -793,6 +880,7 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
   const [panel, setPanel] = useState<'account' | 'privacy' | 'devices' | 'appearance' | 'voice' | 'security' | null>(null);
   const [twoFactor, setTwoFactor] = useState<{ secret: string; qrUrl: string } | null>(null);
   const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
   
   async function logout() {
     try {
@@ -803,6 +891,16 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
     } catch (error) {
       notify('error', 'Failed to logout. Please try again.');
     }
+  }
+
+  async function toggleBiometrics() {
+    const compatible = await LocalAuthentication.hasHardwareAsync();
+    const enrolled = await LocalAuthentication.isEnrolledAsync();
+    if (!compatible || !enrolled) return notify('error', 'No enrolled biometric method found on this device.');
+    const result = await LocalAuthentication.authenticateAsync({ promptMessage: biometricEnabled ? 'Disable biometric login' : 'Enable biometric login' });
+    if (!result.success) return notify('error', 'Biometric check failed.');
+    setBiometricEnabled(prev => !prev);
+    notify('success', biometricEnabled ? 'Biometric login disabled.' : 'Biometric login enabled on this device.');
   }
   
   if (panel) {
@@ -875,6 +973,11 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
               {twoFactor && <><Image source={{ uri: twoFactor.qrUrl }} style={styles.qrImage} /><Text style={styles.muted}>Secret: {twoFactor.secret}</Text><Field icon="keypad" placeholder="6-digit code" value={twoFactorCode} onChangeText={setTwoFactorCode} keyboardType="number-pad" /><PrimaryButton label="Verify 2FA" icon="shield-checkmark" onPress={() => api.verify2fa(twoFactorCode).then(next => { setUser(next); setTwoFactor(null); setTwoFactorCode(''); notify('success', '2FA enabled.'); }).catch(error => notify('error', error.message))} /></>}
               {user.twoFactorEnabled && <><Field icon="keypad" placeholder="Authenticator code" value={twoFactorCode} onChangeText={setTwoFactorCode} keyboardType="number-pad" /><PrimaryButton label="Disable 2FA" icon="shield" onPress={() => api.disable2fa(twoFactorCode).then(next => { setUser(next); setTwoFactorCode(''); notify('success', '2FA disabled.'); }).catch(error => notify('error', error.message))} /></>}
             </GlassCard>
+            <GlassCard>
+              <Text style={styles.cardTitle}>Biometric Login</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Use this device's enrolled biometrics to unlock the app locally.</Text>
+              <PrimaryButton label={biometricEnabled ? 'Disable Biometrics' : 'Enable Biometrics'} icon="finger-print" onPress={toggleBiometrics} />
+            </GlassCard>
           </>
         )}
         
@@ -886,8 +989,10 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
                   <Ionicons name="phone-portrait" size={20} color="#E6C07A" />
                 </View>
                 <View style={styles.flex}>
-                  <Text style={styles.cardTitle}>This Device</Text>
-                  <Text style={styles.muted}>Mobile · Current session</Text>
+                  <Text style={styles.cardTitle}>{Device.deviceName || 'This Device'}</Text>
+                  <Text style={styles.muted}>{Device.modelName || 'Mobile'} · {Platform.OS}</Text>
+                  <Text style={styles.muted}>IP {user.lastIp || 'Unavailable'}</Text>
+                  <Text style={styles.muted}>Last login {user.activeAt ? new Date(user.activeAt).toLocaleString() : 'Active now'}</Text>
                 </View>
                 <View style={styles.statusBadge}>
                   <Text style={styles.statusText}>Active</Text>
@@ -911,16 +1016,13 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
           <>
             <GlassCard>
               <Text style={styles.cardTitle}>Active Theme</Text>
-              <Text style={[styles.muted, { marginTop: 8 }]}>Terria</Text>
-              <Text style={[styles.muted, { marginTop: 8 }]}>A nature-inspired color palette optimized for mobile.</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>{profileThemes[user.profileTheme || 'terria'].label}</Text>
+              <View style={styles.segment}>{(Object.keys(profileThemes) as Array<NonNullable<User['profileTheme']>>).map(item => <Pressable key={item} style={[styles.segmentItem, (user.profileTheme || 'terria') === item && styles.segmentActive]} onPress={() => api.updateProfile({ profileTheme: item }).then(next => { setUser(next); notify('success', 'Appearance updated.'); }).catch(error => notify('error', error.message))}><Text style={styles.segmentText}>{profileThemes[item].label}</Text></Pressable>)}</View>
             </GlassCard>
             <GlassCard>
-              <Text style={styles.cardTitle}>Color Palette</Text>
-              <View style={styles.colorGrid}>
-                {['#58764A', '#7B6F45', '#8C5E3C', '#4B6D78'].map(color => (
-                  <View key={color} style={[styles.colorSwatch, { backgroundColor: color }]} />
-                ))}
-              </View>
+              <Text style={styles.cardTitle}>Accent Color</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Pick your app/profile color from the RGB grid.</Text>
+              <ColorPicker value={user.profileColor} onChange={(color) => api.updateProfile({ profileColor: color }).then(next => { setUser(next); notify('success', 'Color updated.'); }).catch(error => notify('error', error.message))} />
             </GlassCard>
             <GlassCard>
               <Text style={styles.cardTitle}>Density</Text>
@@ -985,7 +1087,7 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
   );
 }
 
-function AdminScreen({ setAnnouncement, setShowAnnouncement, notify }: { setAnnouncement: (a: Announcement | null) => void; setShowAnnouncement: (v: boolean) => void; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
+function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: { setAnnouncement: (a: Announcement | null) => void; setShowAnnouncement: (v: boolean) => void; setTab: (tab: AppTab) => void; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
   const [stats, setStats] = useState<DashboardStats>(emptyStats);
   const [adminAnnouncements, setAdminAnnouncements] = useState<Announcement[]>([]);
   const [adminBlogs, setAdminBlogs] = useState<BlogPost[]>([]);
@@ -1001,6 +1103,11 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, notify }: { setAnno
   const [badge, setBadge] = useState('Founder');
   const [roleUser, setRoleUser] = useState('');
   const [role, setRole] = useState<User['role']>('staff');
+  const [adminUser, setAdminUser] = useState('');
+  const [adminNewUsername, setAdminNewUsername] = useState('');
+  const [adminDisc, setAdminDisc] = useState('');
+  const [adminMobile, setAdminMobile] = useState('');
+  const [adminAltEmail, setAdminAltEmail] = useState('');
 
   const load = () => Promise.all([api.adminStats(), api.adminAnnouncements(), api.blogs()])
     .then(([nextStats, nextAnnouncements, nextBlogs]) => {
@@ -1037,16 +1144,32 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, notify }: { setAnno
       .catch(error => notify('error', error.message));
   }
 
+  async function exportUsers() {
+    await api.exportUsers()
+      .then(text => shareTextFile('zevryl-users.csv', text, notify))
+      .catch(error => notify('error', error.message));
+  }
+
+  async function updateAdminUser(resetUsernameLimit = false) {
+    if (!adminUser.trim()) return notify('error', 'Enter a user tag or email.');
+    await api.updateUser({ username: adminUser, newUsername: adminNewUsername || undefined, discriminator: adminDisc || undefined, mobile: adminMobile || undefined, alternateEmail: adminAltEmail || undefined, resetUsernameLimit })
+      .then(() => notify('success', 'User updated.'))
+      .catch(error => notify('error', error.message));
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <Text style={styles.heroSmall}>Admin Dashboard</Text>
       <StatsGrid values={[['Users', String(stats.users)], ['Reports', String(stats.reports)], ['Groups', String(stats.activeGroups)], ['Health', `${stats.systemHealth}%`]]} />
+      <GlassCard><Text style={styles.cardTitle}>Control Center</Text><Text style={styles.muted}>Jump into moderation tickets, export data, and manage user access from one place.</Text><View style={styles.ticketActions}><SecondaryButton label="Tickets" icon="ticket" onPress={() => setTab('tickets')} /><SecondaryButton label="Staff Queue" icon="briefcase" onPress={() => setTab('staff')} /><SecondaryButton label="Export Users" icon="download" onPress={exportUsers} /></View></GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Announcement</Text><Field icon="megaphone" placeholder="Title" value={title} onChangeText={setTitle} /><Field icon="document-text" placeholder="Message with links" value={body} onChangeText={setBody} multiline /><Field icon="image" placeholder="Image URL" value={imageUrl} onChangeText={setImageUrl} autoCapitalize="none" /><Field icon="link" placeholder="Clickable link URL" value={linkUrl} onChangeText={setLinkUrl} autoCapitalize="none" /><PrimaryButton label="Publish Announcement" icon="send" onPress={broadcast} /></GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Manage Announcements</Text><PrimaryButton label="Refresh" icon="refresh" onPress={load} /><Text style={styles.muted}>Announcements remain visible until deleted manually from this dashboard.</Text>{adminAnnouncements.length === 0 ? <Text style={styles.muted}>No announcements published.</Text> : adminAnnouncements.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.title}</Text><Text style={styles.meta}>{new Date(item.createdAt).toLocaleDateString()}</Text></View><IconButton icon="trash" onPress={() => removeAnnouncement(item.id)} /></View>)}</GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Blog Post</Text><Field icon="newspaper" placeholder="Title" value={blogTitle} onChangeText={setBlogTitle} /><Field icon="document-text" placeholder="Body with links" value={blogBody} onChangeText={setBlogBody} multiline /><Field icon="image" placeholder="Image URL" value={blogImageUrl} onChangeText={setBlogImageUrl} autoCapitalize="none" /><Field icon="link" placeholder="Clickable link URL" value={blogLinkUrl} onChangeText={setBlogLinkUrl} autoCapitalize="none" /><PrimaryButton label="Publish Blog" icon="cloud-upload" onPress={createBlog} /></GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Manage Blog Posts</Text>{adminBlogs.length === 0 ? <Text style={styles.muted}>No blog posts published.</Text> : adminBlogs.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.title}</Text><Text style={styles.meta}>{item.category || 'Update'}</Text></View><IconButton icon="trash" onPress={() => removeBlog(item.id)} /></View>)}</GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Badges</Text><Field icon="at" placeholder="Username" value={badgeUser} onChangeText={setBadgeUser} autoCapitalize="none" /><Field icon="ribbon" placeholder="Badge" value={badge} onChangeText={setBadge} /><PrimaryButton label="Grant Badge" icon="ribbon" onPress={() => api.grantBadge({ username: badgeUser, badge }).then(() => notify('success', 'Badge granted.')).catch(error => notify('error', error.message))} /></GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Roles</Text><Field icon="at" placeholder="Username" value={roleUser} onChangeText={setRoleUser} autoCapitalize="none" /><View style={styles.segment}>{(['user', 'staff', 'admin'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, role === item && styles.segmentActive]} onPress={() => setRole(item)}><Text style={styles.segmentText}>{item}</Text></Pressable>)}</View><PrimaryButton label="Update Role" icon="key" onPress={() => api.setRole({ username: roleUser, role }).then(() => notify('success', 'Role updated.')).catch(error => notify('error', error.message))} /></GlassCard>
+      <GlassCard><Text style={styles.cardTitle}>User Control</Text><Field icon="at" placeholder="User tag/email" value={adminUser} onChangeText={setAdminUser} autoCapitalize="none" /><Field icon="person" placeholder="New username" value={adminNewUsername} onChangeText={setAdminNewUsername} autoCapitalize="none" /><Field icon="keypad" placeholder="New 5-digit #" value={adminDisc} onChangeText={setAdminDisc} keyboardType="number-pad" maxLength={5} /><Field icon="call" placeholder="Mobile" value={adminMobile} onChangeText={setAdminMobile} keyboardType="phone-pad" /><Field icon="mail" placeholder="Alternate email" value={adminAltEmail} onChangeText={setAdminAltEmail} autoCapitalize="none" /><PrimaryButton label="Update User" icon="save" onPress={() => updateAdminUser(false)} /><SecondaryButton label="Reset Username Limit" icon="refresh" onPress={() => updateAdminUser(true)} /></GlassCard>
+      <GlassCard><Text style={styles.cardTitle}>Exports</Text><Text style={styles.muted}>Download users as a CSV spreadsheet with profile, contact, history, and activity fields.</Text><PrimaryButton label="Download Users CSV" icon="download" onPress={exportUsers} /></GlassCard>
     </ScrollView>
   );
 }
@@ -1055,6 +1178,7 @@ function TicketScreen({ user, notify }: { user: User; notify: (tone: 'error' | '
   const [tickets, setTickets] = useState<Loadable<Ticket[]>>({ loading: true, data: [] });
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
+  const [ticketReply, setTicketReply] = useState('');
   const [type, setType] = useState<Ticket['type']>('support');
   const load = () => api.tickets().then(data => setTickets({ loading: false, data })).catch(error => { setTickets({ loading: false, data: [], error: error.message }); notify('error', error.message); });
   useEffect(() => { load(); }, []);
@@ -1062,6 +1186,22 @@ function TicketScreen({ user, notify }: { user: User; notify: (tone: 'error' | '
     if (!subject.trim() || !body.trim()) return notify('error', 'Add a subject and message.');
     await api.createTicket({ type, subject, body })
       .then(() => { setSubject(''); setBody(''); notify('success', 'Ticket created.'); load(); })
+      .catch(error => notify('error', error.message));
+  }
+  async function ticketAction(ticket: Ticket, action: 'close' | 'reopen') {
+    await api.updateTicket(ticket.id, { action })
+      .then(load)
+      .catch(error => notify('error', error.message));
+  }
+  async function download(ticket: Ticket) {
+    await api.downloadTicket(ticket.id)
+      .then(text => shareTextFile(`zevryl-ticket-${ticket.id}.txt`, text, notify))
+      .catch(error => notify('error', error.message));
+  }
+  async function reply(ticket: Ticket) {
+    if (!ticketReply.trim()) return;
+    await api.updateTicket(ticket.id, { note: ticketReply })
+      .then(() => { setTicketReply(''); load(); })
       .catch(error => notify('error', error.message));
   }
   return (
@@ -1078,11 +1218,13 @@ function TicketScreen({ user, notify }: { user: User; notify: (tone: 'error' | '
         <GlassCard key={ticket.id}>
           <View style={styles.postTop}><Text style={styles.cardTitle}>{ticket.subject}</Text><Text style={styles.badge}>{ticket.status}</Text></View>
           <Text style={styles.muted}>{ticket.type} · {new Date(ticket.createdAt).toLocaleDateString()}</Text>
-          <Text style={styles.body}>{ticket.body}</Text>
+          <View style={styles.ticketChat}><Text style={styles.messageName}>{user.displayName}</Text><Text style={styles.body}>{ticket.body}</Text>{(ticket.updates || []).map(update => <View key={`${update.at}-${update.by}`} style={styles.ticketReply}><Text style={styles.messageName}>Staff/User</Text><Text style={styles.body}>{update.note}</Text><Text style={styles.meta}>{new Date(update.at).toLocaleString()}</Text></View>)}</View>
+          <Field icon="chatbubble" placeholder="Reply in ticket" value={ticketReply} onChangeText={setTicketReply} multiline />
           {ticket.proofUrl ? <Pressable onPress={() => openLink(ticket.proofUrl)}><Text style={styles.link}>Open proof</Text></Pressable> : null}
           <View style={styles.mediaActions}>
-            <SecondaryButton label="Download" icon="download" onPress={() => notify('info', `Ticket ${ticket.id}: ${ticket.subject}`)} />
-            {ticket.status !== 'closed' && <SecondaryButton label="Close" icon="checkmark" onPress={() => notify('info', 'Close actions are handled by staff in this build.')} />}
+            <SecondaryButton label="Reply" icon="send" onPress={() => reply(ticket)} />
+            <SecondaryButton label="Download" icon="download" onPress={() => download(ticket)} />
+            {ticket.status !== 'closed' ? <SecondaryButton label="Close" icon="checkmark" onPress={() => ticketAction(ticket, 'close')} /> : <SecondaryButton label="Reopen" icon="refresh" onPress={() => ticketAction(ticket, 'reopen')} />}
           </View>
         </GlassCard>
       ))}
@@ -1093,17 +1235,33 @@ function TicketScreen({ user, notify }: { user: User; notify: (tone: 'error' | '
 
 function StaffScreen({ notify }: { notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
   const [queue, setQueue] = useState<Loadable<{ reports: Report[]; tickets: Ticket[] }>>({ loading: true, data: { reports: [], tickets: [] } });
+  const [staffNote, setStaffNote] = useState('');
   const load = () => api.reports().then(data => setQueue({ loading: false, data })).catch(error => { setQueue({ loading: false, data: { reports: [], tickets: [] }, error: error.message }); notify('error', error.message); });
   useEffect(() => { load(); }, []);
   const reports = queue.data.reports;
   const tickets = queue.data.tickets;
+  async function staffAction(ticket: Ticket, action: 'claim' | 'close' | 'reopen' | 'delete' | 'ban') {
+    const task = action === 'delete' ? api.deleteTicket(ticket.id) : api.updateTicket(ticket.id, { action });
+    await task.then(() => { notify('success', `Ticket ${action} complete.`); load(); }).catch(error => notify('error', error.message));
+  }
+  async function download(ticket: Ticket) {
+    await api.downloadTicket(ticket.id)
+      .then(text => shareTextFile(`zevryl-ticket-${ticket.id}.txt`, text, notify))
+      .catch(error => notify('error', error.message));
+  }
+  async function sendStaffNote(ticket: Ticket) {
+    if (!staffNote.trim()) return;
+    await api.updateTicket(ticket.id, { note: staffNote })
+      .then(() => { setStaffNote(''); load(); })
+      .catch(error => notify('error', error.message));
+  }
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <SectionTitle title="Staff Dashboard" action="Refresh" onPress={load} />
       <StatsGrid values={[['Tickets', String(tickets.length)], ['Reports', String(reports.length)], ['Open', String(tickets.filter(r => r.status === 'open').length)], ['Reviewing', String(tickets.filter(r => r.status === 'reviewing').length)]]} />
       <FeatureCard title="Moderation Tools" body="Review reports, check user context, and escalate incidents to admins." icon="hammer" />
       <FeatureCard title="Safety Watch" body="Track flagged DMs, suspicious groups, and account recovery requests." icon="warning" />
-      {queue.loading ? <LoadingState /> : queue.error ? <ErrorState message={queue.error} onRetry={load} /> : tickets.map(ticket => <GlassCard key={ticket.id}><View style={styles.postTop}><Text style={styles.cardTitle}>{ticket.subject}</Text><Text style={styles.badge}>{ticket.status}</Text></View><Text style={styles.muted}>{ticket.type}</Text><Text style={styles.body}>{ticket.body}</Text><View style={styles.mediaActions}><SecondaryButton label="Claim" icon="hand-left" onPress={() => notify('info', 'Claimed locally.')} /><SecondaryButton label="Download" icon="download" onPress={() => notify('info', `Ticket ${ticket.id}: ${ticket.subject}`)} /></View></GlassCard>)}
+      {queue.loading ? <LoadingState /> : queue.error ? <ErrorState message={queue.error} onRetry={load} /> : tickets.map(ticket => <GlassCard key={ticket.id}><View style={styles.postTop}><Text style={styles.cardTitle}>{ticket.subject}</Text><Text style={styles.badge}>{ticket.status}</Text></View><Text style={styles.muted}>{ticket.type}</Text><View style={styles.ticketChat}><Text style={styles.body}>{ticket.body}</Text>{(ticket.updates || []).map(update => <View key={`${update.at}-${update.by}`} style={styles.ticketReply}><Text style={styles.body}>{update.note}</Text><Text style={styles.meta}>{new Date(update.at).toLocaleString()}</Text></View>)}</View><Field icon="chatbubble" placeholder="Reply as staff" value={staffNote} onChangeText={setStaffNote} multiline /><View style={styles.ticketActions}><SecondaryButton label="Reply" icon="send" onPress={() => sendStaffNote(ticket)} /><SecondaryButton label="Claim" icon="hand-left" onPress={() => staffAction(ticket, 'claim')} /><SecondaryButton label="Close" icon="checkmark" onPress={() => staffAction(ticket, 'close')} /><SecondaryButton label="Reopen" icon="refresh" onPress={() => staffAction(ticket, 'reopen')} /><SecondaryButton label="Download" icon="download" onPress={() => download(ticket)} /><SecondaryButton label="Ban" icon="ban" onPress={() => staffAction(ticket, 'ban')} /><SecondaryButton label="Delete" icon="trash" onPress={() => staffAction(ticket, 'delete')} /></View></GlassCard>)}
       {tickets.length === 0 && !queue.loading && <EmptyState title="No tickets" body="The moderation queue is clear." />}
     </ScrollView>
   );
@@ -1197,11 +1355,25 @@ function StatusPill({ presence }: { presence: User['presence'] }) {
 }
 
 function BadgeChip({ badge }: { badge: string }) {
-  return <Pressable onPress={() => Alert.alert(badge, `${badge} badge`)} style={styles.badgeChip}><Ionicons name={badgeIcons[badge] || 'ribbon'} size={12} color="#E6C07A" /><Text style={styles.badgeChipText}>{badge}</Text></Pressable>;
+  const [visible, setVisible] = useState(false);
+  return <><Pressable onPress={() => setVisible(true)} style={styles.badgeChip}><Ionicons name={badgeIcons[badge] || 'ribbon'} size={12} color="#E6C07A" /><Text style={styles.badgeChipText}>{badge}</Text></Pressable><BadgeToast badge={badge} visible={visible} onClose={() => setVisible(false)} /></>;
 }
 
 function BadgeIcon({ badge }: { badge: string }) {
-  return <Pressable onPress={() => Alert.alert(badge, `${badge} badge`)} style={styles.badgeIcon}><Ionicons name={badgeIcons[badge] || 'ribbon'} size={11} color="#E6C07A" /></Pressable>;
+  const [visible, setVisible] = useState(false);
+  return <><Pressable onPress={() => setVisible(true)} style={styles.badgeIcon}><Ionicons name={badgeIcons[badge] || 'ribbon'} size={11} color="#E6C07A" /></Pressable><BadgeToast badge={badge} visible={visible} onClose={() => setVisible(false)} /></>;
+}
+
+function BadgeToast({ badge, visible, onClose }: { badge: string; visible: boolean; onClose: () => void }) {
+  if (!visible) return null;
+  return <Modal visible transparent animationType="fade"><Pressable style={styles.badgeToastBackdrop} onPress={onClose}><View style={styles.badgeToast}><Ionicons name={badgeIcons[badge] || 'ribbon'} size={24} color="#E6C07A" /><Text style={styles.cardTitle}>{badge}</Text><Text style={styles.muted}>{badge} badge</Text></View></Pressable></Modal>;
+}
+
+function UserAvatar({ user, size = 50 }: { user: User; size?: number }) {
+  const radius = Math.max(9, Math.round(size * 0.24));
+  return user.avatarUrl
+    ? <Image source={{ uri: user.avatarUrl }} style={[styles.avatarImage, { width: size, height: size, borderRadius: radius }]} />
+    : <View style={[styles.avatar, { width: size, height: size, borderRadius: radius }]}><Text style={styles.avatarText}>{user.displayName.slice(0, 1).toUpperCase()}</Text></View>;
 }
 
 function topPriorityBadge(badges: string[]) {
@@ -1233,6 +1405,7 @@ function ProfileSheet({
   onMute: (action: 'mute' | 'block' | 'unfriend', hours?: number) => void;
   onReport: () => void;
 }) {
+  const [showReport, setShowReport] = useState(false);
   if (!user) return null;
   const own = user.id === currentUser.id;
   const theme = profileThemes[user.profileTheme || 'terria'];
@@ -1240,33 +1413,33 @@ function ProfileSheet({
     <Modal visible transparent animationType="slide">
       <View style={styles.sheetBackdrop}>
         <View style={[styles.profileSheet, { borderColor: theme.color }]}>
-          {user.bannerUrl ? <Image source={{ uri: user.bannerUrl }} style={styles.sheetBanner} resizeMode="cover" /> : <View style={[styles.sheetBanner, { backgroundColor: user.profileColor || theme.color }]} />}
-          <View style={styles.sheetHeader}>
-            <Image source={user.avatarUrl ? { uri: user.avatarUrl } : logo} style={styles.sheetAvatar} />
-            <View style={styles.flex}>
-              <Text style={styles.profileName}>{user.displayName}</Text>
-              <Text style={styles.muted}>@{user.tag || user.username}</Text>
-              <View style={styles.badgeRow}>{normalizeBadges(user.badges).map(badge => <BadgeChip key={badge} badge={badge} />)}</View>
+          <ScrollView contentContainerStyle={styles.profileSheetContent} keyboardShouldPersistTaps="handled">
+            {user.bannerUrl ? <Image source={{ uri: user.bannerUrl }} style={styles.sheetBanner} resizeMode="cover" /> : <View style={[styles.sheetBanner, { backgroundColor: user.profileColor || theme.color }]} />}
+            <View style={styles.sheetHeader}>
+              <Image source={user.avatarUrl ? { uri: user.avatarUrl } : logo} style={styles.sheetAvatar} />
+              <View style={styles.flex}>
+                <Text style={styles.profileName}>{user.displayName}</Text>
+                <Text style={styles.muted}>@{user.tag || user.username}</Text>
+                <View style={styles.badgeRow}>{normalizeBadges(user.badges).map(badge => <BadgeChip key={badge} badge={badge} />)}</View>
+              </View>
+              <IconButton icon="close" onPress={onClose} />
             </View>
-            <IconButton icon="close" onPress={onClose} />
-          </View>
-          <RichText text={user.bio || 'No bio yet.'} />
-          {!own && (
-            <>
-              <View style={styles.segment}>
-                <Pressable style={styles.segmentItem} onPress={() => onMute('mute', 1)}><Text style={styles.segmentText}>Mute 1h</Text></Pressable>
-                <Pressable style={styles.segmentItem} onPress={() => onMute('mute', 24)}><Text style={styles.segmentText}>Mute 1d</Text></Pressable>
-                <Pressable style={styles.segmentItem} onPress={() => onMute('mute', 168)}><Text style={styles.segmentText}>Mute 7d</Text></Pressable>
-              </View>
-              <View style={styles.mediaActions}>
-                <SecondaryButton label="Unfriend" icon="person-remove" onPress={() => onMute('unfriend')} />
-                <SecondaryButton label="Block" icon="ban" onPress={() => onMute('block')} />
-              </View>
-              <Field icon="warning" placeholder="Report reason" value={reportReason} onChangeText={setReportReason} multiline />
-              <Field icon="image" placeholder="Optional proof image URL/base64" value={reportProof} onChangeText={setReportProof} autoCapitalize="none" />
-              <PrimaryButton label="Create Report Ticket" icon="flag" onPress={onReport} />
-            </>
-          )}
+            <RichText text={user.bio || 'No bio yet.'} />
+            {!own && (
+              <>
+                <View style={styles.segment}>
+                  <Pressable style={styles.segmentItem} onPress={() => onMute('mute', 1)}><Text style={styles.segmentText}>Mute 1h</Text></Pressable>
+                  <Pressable style={styles.segmentItem} onPress={() => onMute('mute', 24)}><Text style={styles.segmentText}>Mute 1d</Text></Pressable>
+                  <Pressable style={styles.segmentItem} onPress={() => onMute('mute', 168)}><Text style={styles.segmentText}>Mute 7d</Text></Pressable>
+                </View>
+                <View style={styles.mediaActions}>
+                  <SecondaryButton label="Unfriend" icon="person-remove" onPress={() => onMute('unfriend')} />
+                  <SecondaryButton label="Block" icon="ban" onPress={() => onMute('block')} />
+                </View>
+                {!showReport ? <PrimaryButton label="Report User" icon="flag" onPress={() => setShowReport(true)} /> : <><Field icon="warning" placeholder="Report reason" value={reportReason} onChangeText={setReportReason} multiline /><Field icon="image" placeholder="Optional proof image URL/base64" value={reportProof} onChangeText={setReportProof} autoCapitalize="none" /><PrimaryButton label="Create Report Ticket" icon="flag" onPress={onReport} /></>}
+              </>
+            )}
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -1279,9 +1452,21 @@ function openLink(url?: string) {
   Linking.openURL(normalized).catch(() => undefined);
 }
 
+async function shareTextFile(filename: string, contents: string, notify: (tone: NoticeTone, text: string) => void) {
+  const safeName = filename.replace(/[^a-z0-9_.-]/gi, '_');
+  const uri = `${FileSystem.documentDirectory}${safeName}`;
+  await FileSystem.writeAsStringAsync(uri, contents, { encoding: FileSystem.EncodingType.UTF8 });
+  if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri);
+  else notify('info', contents.slice(0, 800));
+}
+
 function RichText({ text }: { text: string }) {
   const parts = text.split(/(https?:\/\/[^\s]+|www\.[^\s]+)/g);
   return <Text style={styles.body}>{parts.map((part, index) => /^(https?:\/\/|www\.)/i.test(part) ? <Text key={`${part}-${index}`} style={styles.inlineLink} onPress={() => openLink(part)}>{part}</Text> : <Text key={`${part}-${index}`}>{part}</Text>)}</Text>;
+}
+
+function ColorPicker({ value, onChange }: { value: string; onChange: (color: string) => void }) {
+  return <View style={styles.colorPicker}>{colorChoices.map(color => <Pressable key={color} onPress={() => onChange(color)} style={[styles.colorSwatchButton, { backgroundColor: color }, value === color && styles.colorSwatchSelected]} />)}</View>;
 }
 
 function NoticeFooter({ notice, bottom }: { notice: Notice; bottom: number }) {
@@ -1322,11 +1507,11 @@ function SectionTitle({ title, action, onPress }: { title: string; action?: stri
 }
 
 function UserList({ title, users, empty, right }: { title: string; users: User[]; empty: string; right?: (user: User) => React.ReactNode }) {
-  return <View><Text style={styles.label}>{title}</Text>{users.length === 0 ? <EmptyState title="Empty" body={empty} /> : users.map(user => <GlassCard key={user.id} style={styles.userRow}><View style={styles.avatar}><Text style={styles.avatarText}>{user.displayName.slice(0, 1)}</Text></View><View style={styles.flex}><Text style={styles.body}>{user.displayName}</Text><Text style={styles.muted}>@{user.tag || user.username}</Text><Text style={styles.muted}>{user.customStatus || user.presence}</Text><View style={styles.badgeRowMini}>{user.badges.slice(0, 3).map(b => <Text key={b} style={styles.badgeMini}>{b}</Text>)}</View></View>{right?.(user)}</GlassCard>)}</View>;
+  return <View><Text style={styles.label}>{title}</Text>{users.length === 0 ? <EmptyState title="Empty" body={empty} /> : users.map(user => <GlassCard key={user.id} style={styles.userRow}><UserAvatar user={user} /><View style={styles.flex}><Text style={styles.body}>{user.displayName}</Text><Text style={styles.muted}>@{user.tag || user.username}</Text><Text style={styles.muted}>{user.customStatus || user.presence}</Text><View style={styles.badgeRowMini}>{user.badges.slice(0, 3).map(b => <Text key={b} style={styles.badgeMini}>{b}</Text>)}</View></View>{right?.(user)}</GlassCard>)}</View>;
 }
 
 function RequestList({ title, requests, accept, deny }: { title: string; requests: FriendState['incoming']; accept?: (id: string) => void; deny?: (id: string) => void }) {
-  return <View><Text style={styles.label}>{title}</Text>{requests.length === 0 ? <Text style={styles.muted}>None</Text> : requests.map(req => <GlassCard key={req.id} style={styles.userRow}><View style={styles.avatar}><Text style={styles.avatarText}>{req.fromUser.displayName.slice(0, 1).toUpperCase()}</Text></View><View style={styles.flex}><Text style={styles.body}>{req.fromUser.displayName}</Text><Text style={styles.muted}>{req.status}</Text></View>{accept && <IconButton icon="checkmark" onPress={() => accept(req.id)} />}{deny && <IconButton icon="close" onPress={() => deny(req.id)} />}</GlassCard>)}</View>;
+  return <View><Text style={styles.label}>{title}</Text>{requests.length === 0 ? <Text style={styles.muted}>None</Text> : requests.map(req => <GlassCard key={req.id} style={styles.userRow}><UserAvatar user={req.fromUser} /><View style={styles.flex}><Text style={styles.body}>{req.fromUser.displayName}</Text><Text style={styles.muted}>@{req.fromUser.tag || req.fromUser.username}</Text><Text style={styles.muted}>{req.status}</Text></View>{accept && <IconButton icon="checkmark" onPress={() => accept(req.id)} />}{deny && <IconButton icon="close" onPress={() => deny(req.id)} />}</GlassCard>)}</View>;
 }
 
 function EmptyState({ title, body }: { title: string; body: string }) {
@@ -1444,6 +1629,7 @@ const styles = StyleSheet.create({
   userRowActions: { flexDirection: 'row', gap: 8 },
   
   avatar: { width: 50, height: 50, borderRadius: 12, backgroundColor: '#33412E', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#7D8B58' },
+  avatarImage: { backgroundColor: '#33412E', borderWidth: 2, borderColor: '#7D8B58' },
   avatarSmall: { width: 36, height: 36, borderRadius: 9, backgroundColor: '#33412E', alignItems: 'center', justifyContent: 'center' },
   avatarLarge: { width: 96, height: 96, borderRadius: 24, backgroundColor: '#33412E', alignItems: 'center', justifyContent: 'center', borderWidth: 3, borderColor: '#7D8B58' },
   avatarText: { color: '#F4F0E6', fontWeight: '900', fontSize: 18 },
@@ -1476,7 +1662,7 @@ const styles = StyleSheet.create({
   friendOptionText: { color: '#E7EBDD', fontSize: 15, fontWeight: '500', flex: 1 },
   
   // Chat & Messages
-  chatLayout: { flex: 1, paddingHorizontal: 10, paddingBottom: 118, gap: 10 },
+  chatLayout: { flex: 1, paddingHorizontal: 10, paddingBottom: 156, gap: 10 },
   dmListFull: { padding: 6, gap: 10 },
   dmCard: { minHeight: 66, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(218,226,202,.13)', backgroundColor: 'rgba(22,30,23,.82)', padding: 12, flexDirection: 'row', alignItems: 'center', gap: 12 },
   dmRail: { width: 122, borderRightWidth: 1, borderColor: 'rgba(218,226,202,.1)', paddingTop: 8, gap: 8 },
@@ -1491,12 +1677,15 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, minHeight: 42, color: '#F4F0E6', borderRadius: 10, backgroundColor: '#151D16', paddingHorizontal: 12, borderWidth: 1, borderColor: 'rgba(218,226,202,.12)' },
   
   messagesContainer: { gap: 10, marginVertical: 14 },
-  messageList: { paddingVertical: 12, gap: 10, paddingBottom: 16 },
+  messageList: { paddingVertical: 12, gap: 10, paddingBottom: 28 },
   messageRow: { alignItems: 'flex-start' },
   messageOwn: { alignItems: 'flex-end' },
   messageBubble: { maxWidth: '92%', borderRadius: 12, padding: 12, marginBottom: 10, backgroundColor: 'rgba(30,42,33,.8)' },
   messageAuthor: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 4 },
   messageName: { color: '#E6C07A', fontSize: 12, fontWeight: '800' },
+  messageTimeInline: { color: '#899486', fontSize: 11, fontWeight: '700', marginLeft: 6 },
+  editedTag: { color: '#899486', fontSize: 11, fontStyle: 'italic' },
+  messageActions: { flexDirection: 'row', gap: 10, marginTop: -4, marginBottom: 8, paddingHorizontal: 8 },
   messageBubbleOther: { backgroundColor: 'rgba(30,42,33,.8)' },
   messageBubbleOwn: { backgroundColor: '#4A5934', alignSelf: 'flex-end' },
   messageBody: { color: '#F2F8F5', fontSize: 15, lineHeight: 22, fontWeight: '500' },
@@ -1509,6 +1698,7 @@ const styles = StyleSheet.create({
   gifImage: { width: 190, height: 130, borderRadius: 10, backgroundColor: '#111712' },
   chatImage: { width: 214, height: 150, borderRadius: 10, backgroundColor: '#111712' },
   pickerRow: { flexDirection: 'row', gap: 6, paddingVertical: 8, flexWrap: 'wrap' },
+  pickerPanel: { gap: 8, paddingVertical: 8 },
   pickerButton: { width: 40, height: 40, borderRadius: 10, backgroundColor: '#202A21', alignItems: 'center', justifyContent: 'center' },
   emojiText: { fontSize: 22 },
   gifPicker: { flexDirection: 'row', gap: 8, paddingVertical: 10 },
@@ -1516,15 +1706,15 @@ const styles = StyleSheet.create({
   
   chatCard: { gap: 12 },
   composerContainer: { flexDirection: 'row', alignItems: 'flex-end', gap: 12, padding: 14, borderTopWidth: 1, borderColor: 'rgba(255,255,255,.08)', backgroundColor: 'rgba(5,7,11,.92)' },
-  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 10, paddingVertical: 10 },
+  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingVertical: 10, paddingBottom: 18, backgroundColor: 'rgba(17,23,18,.96)' },
   composerInput: { flex: 1, minHeight: 48, maxHeight: 110, color: '#F4F0E6', borderRadius: 12, backgroundColor: '#151D16', paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, borderWidth: 1, borderColor: 'rgba(218,226,202,.12)' },
   callActions: { flexDirection: 'row', gap: 10 },
   callCard: { gap: 12, borderColor: 'rgba(255,170,168,.15)', borderWidth: 1 },
   
   // Profile
   profileHero: { alignItems: 'center', gap: 14, paddingTop: 8, paddingVertical: 20 },
-  profileBanner: { height: 90, alignSelf: 'stretch', marginHorizontal: -18, marginTop: -18, marginBottom: -32 },
-  profileBannerImage: { height: 116, alignSelf: 'stretch', marginHorizontal: -18, marginTop: -18, marginBottom: -42, backgroundColor: '#111712' },
+  profileBanner: { height: 132, alignSelf: 'stretch', marginHorizontal: -18, marginTop: -18, marginBottom: 12 },
+  profileBannerImage: { height: 132, alignSelf: 'stretch', marginHorizontal: -18, marginTop: -18, marginBottom: 12, backgroundColor: '#111712' },
   profileAvatarLarge: { width: 96, height: 96, borderRadius: 24, backgroundColor: '#33412E', alignItems: 'center', justifyContent: 'center', borderWidth: 3, borderColor: '#7D8B58' },
   profileAvatarText: { color: '#F4F0E6', fontWeight: '900', fontSize: 36 },
   profileLogo: { width: 96, height: 96, borderRadius: 20, borderWidth: 3, borderColor: '#1B241C' },
@@ -1533,6 +1723,9 @@ const styles = StyleSheet.create({
   profileBadgeContainer: { flexDirection: 'row', gap: 10, marginTop: 8 },
   colorRow: { flexDirection: 'row', gap: 12, marginTop: 12 },
   mediaActions: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  ticketActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
+  ticketChat: { gap: 10, borderLeftWidth: 2, borderLeftColor: 'rgba(230,192,122,.24)', paddingLeft: 12, marginTop: 10 },
+  ticketReply: { backgroundColor: 'rgba(255,255,255,.04)', borderRadius: 10, padding: 10, gap: 4 },
   colorDot: { width: 36, height: 36, borderRadius: 18, borderWidth: 2, borderColor: 'transparent' },
   colorDotActive: { borderColor: '#F4F0E6' },
   
@@ -1550,10 +1743,13 @@ const styles = StyleSheet.create({
   noticeSuccess: { backgroundColor: 'rgba(36,72,44,.94)', borderColor: 'rgba(152,214,161,.44)' },
   noticeInfo: { backgroundColor: 'rgba(46,58,82,.94)', borderColor: 'rgba(160,184,220,.44)' },
   noticeText: { color: '#fff', fontWeight: '800' },
+  badgeToastBackdrop: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,.34)', padding: 24 },
+  badgeToast: { minWidth: 190, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(230,192,122,.34)', backgroundColor: '#182019', padding: 20, alignItems: 'center', gap: 8 },
   
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,.68)', alignItems: 'center', justifyContent: 'center', padding: 20 },
   sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,.58)', justifyContent: 'flex-end' },
-  profileSheet: { maxHeight: '88%', borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, backgroundColor: '#182019', padding: 16, gap: 12 },
+  profileSheet: { maxHeight: '82%', borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, backgroundColor: '#182019', overflow: 'hidden' },
+  profileSheetContent: { padding: 16, paddingBottom: 34, gap: 12 },
   sheetBanner: { height: 96, borderRadius: 12, backgroundColor: '#33412E' },
   sheetHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   sheetAvatar: { width: 72, height: 72, borderRadius: 18, borderWidth: 2, borderColor: '#1B241C', backgroundColor: '#111712' },
@@ -1594,6 +1790,9 @@ const styles = StyleSheet.create({
   permissionItem: { paddingVertical: 12 },
   colorGrid: { flexDirection: 'row', gap: 12, marginTop: 12 },
   colorSwatch: { width: 48, height: 48, borderRadius: 10 },
+  colorPicker: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 12 },
+  colorSwatchButton: { width: 34, height: 34, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,.18)' },
+  colorSwatchSelected: { borderColor: '#F4F0E6', borderWidth: 3 },
   
   videoGrid: { minHeight: 240, gap: 10, borderRadius: 18, overflow: 'hidden', backgroundColor: '#05070B', alignItems: 'center', justifyContent: 'center' },
   videoTile: { width: '100%', height: 240, borderRadius: 18 }

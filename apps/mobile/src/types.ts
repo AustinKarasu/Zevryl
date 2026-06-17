@@ -8,8 +8,12 @@ export type User = {
   discriminator: string;
   tag: string;
   displayName: string;
+  mobile?: string;
+  alternateEmail?: string;
   avatarUrl?: string;
   bannerUrl?: string;
+  previousAvatars?: string[];
+  previousBanners?: string[];
   profileColor: string;
   profileTheme?: 'terria' | 'ember' | 'ocean' | 'mono';
   bio: string;
@@ -18,6 +22,9 @@ export type User = {
   presence: Presence;
   badges: string[];
   role: 'user' | 'staff' | 'admin';
+  usernameChanges?: string[];
+  activeAt?: string;
+  lastIp?: string;
   privacy?: {
     dmPolicy: 'everyone' | 'friends' | 'none';
     profileLinks: boolean;
@@ -124,6 +131,8 @@ export type Ticket = {
   proofUrl?: string;
   targetUserId?: string;
   status: 'open' | 'reviewing' | 'resolved' | 'closed';
+  claimedBy?: string;
+  closedAt?: string;
   createdAt: string;
   updates?: Array<{ by: string; note: string; at: string }>;
 };

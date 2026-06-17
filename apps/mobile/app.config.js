@@ -2,17 +2,17 @@ const app = {
   expo: {
     name: 'Zevryl',
     slug: 'zevryl',
-    version: '0.1.15',
+    version: '0.1.16',
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'dark',
     splash: {
-      image: './assets/zevryl-logo.png',
+      image: './assets/zevryl-splash.png',
       resizeMode: 'contain',
-      backgroundColor: '#05070B'
+      backgroundColor: '#111712'
     },
     assetBundlePatterns: ['**/*'],
-    plugins: ['./plugins/withAndroidNetworkConfig'],
+    plugins: ['./plugins/withAndroidNetworkConfig', 'expo-notifications'],
     ios: {
       supportsTablet: true,
       bundleIdentifier: 'com.zevryl.mobile',
@@ -24,9 +24,13 @@ const app = {
     },
     android: {
       package: 'com.zevryl.mobile',
-      versionCode: 15,
+      versionCode: 16,
+      adaptiveIcon: {
+        foregroundImage: './assets/icon.png',
+        backgroundColor: '#1475F8'
+      },
       usesCleartextTraffic: true,
-      permissions: ['INTERNET', 'CAMERA', 'RECORD_AUDIO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VIDEO']
+      permissions: ['INTERNET', 'CAMERA', 'RECORD_AUDIO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VIDEO', 'POST_NOTIFICATIONS']
     },
     extra: {
       apiUrl: 'http://150.242.202.246:4100'
