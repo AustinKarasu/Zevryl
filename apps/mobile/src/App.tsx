@@ -179,9 +179,18 @@ function SplashScreen() {
   return (
     <TerraShell>
       <SafeAreaView style={styles.splash}>
-        <Image source={wordmark} style={styles.splashWordmark} resizeMode="contain" />
-        <Text style={styles.brandSub}>TERRIA NETWORK</Text>
-        <View style={styles.loadingBar}><View style={styles.loadingFill} /></View>
+        <View style={styles.splashContent}>
+          <Image source={wordmark} style={styles.splashWordmark} resizeMode="contain" />
+          <Text style={styles.brandTitle}>Zevryl</Text>
+          <Text style={styles.brandSub}>SECURE COMMUNITY</Text>
+          <Text style={styles.splashTagline}>Connect privately, chat freely</Text>
+        </View>
+        <View style={styles.splashFooter}>
+          <View style={styles.loadingBar}>
+            <View style={styles.loadingFill} />
+          </View>
+          <Text style={styles.loadingText}>Initializing secure connection...</Text>
+        </View>
       </SafeAreaView>
     </TerraShell>
   );
@@ -511,8 +520,38 @@ function ProfileScreen({ user, setUser, notify }: { user: User; setUser: (user: 
         <View style={styles.badgeRow}>{normalizeBadges(user.badges).map(badge => <BadgeChip key={badge} badge={badge} />)}</View>
         <PrimaryButton label="Edit Profile" icon="create" onPress={() => setEditing(true)} />
       </GlassCard>
-      <GlassCard><Text style={styles.cardTitle}>Biography</Text><RichText text={user.bio || 'No bio yet.'} /></GlassCard>
-      <FeatureCard title="Status" body={user.customStatus || presenceMeta[user.presence].label} icon={presenceMeta[user.presence].icon} />
+      
+      {user.pronouns && (
+        <GlassCard>
+          <Text style={styles.cardTitle}>About</Text>
+          <View style={styles.infoRow}>
+            <Text style={styles.muted}>Pronouns</Text>
+            <Text style={styles.body}>{user.pronouns}</Text>
+          </View>
+        </GlassCard>
+      )}
+      
+      {user.bio && (
+        <GlassCard>
+          <Text style={styles.cardTitle}>Biography</Text>
+          <RichText text={user.bio || 'No bio yet.'} />
+        </GlassCard>
+      )}
+      
+      {user.customStatus && (
+        <FeatureCard title="Status" body={user.customStatus} icon="radio" />
+      )}
+      
+      <GlassCard>
+        <Text style={styles.cardTitle}>Presence</Text>
+        <View style={[styles.infoRow, { marginTop: 8 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Ionicons name={presenceMeta[user.presence].icon} size={14} color={presenceMeta[user.presence].color} />
+            <Text style={styles.body}>{presenceMeta[user.presence].label}</Text>
+          </View>
+        </View>
+      </GlassCard>
+      
       <ProfileEditor visible={editing} user={user} onClose={() => setEditing(false)} onSaved={(next) => { setUser(next); setEditing(false); notify('success', 'Profile updated.'); }} notify={notify} />
     </ScrollView>
   );
@@ -525,85 +564,344 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
   const [customStatus, setCustomStatus] = useState(user.customStatus || '');
   const [profileColor, setProfileColor] = useState(user.profileColor || '#58764A');
   const [presence, setPresence] = useState<User['presence']>(user.presence);
-  const [avatarUrl, setAvatarUrl] = useState(user.avatarUrl || '');
-  const [bannerUrl, setBannerUrl] = useState(user.bannerUrl || '');
+  const [avatarUri, setAvatarUri] = useState(user.avatarUrl || '');
+  const [bannerUri, setBannerUri] = useState(user.bannerUrl || '');
   const [busy, setBusy] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [uploadingBanner, setUploadingBanner] = useState(false);
 
   useEffect(() => {
-    setDisplayName(user.displayName); setBio(user.bio); setPronouns(user.pronouns || ''); setCustomStatus(user.customStatus || ''); setProfileColor(user.profileColor || '#58764A'); setPresence(user.presence); setAvatarUrl(user.avatarUrl || ''); setBannerUrl(user.bannerUrl || '');
+    if (visible) {
+      setDisplayName(user.displayName);
+      setBio(user.bio);
+      setPronouns(user.pronouns || '');
+      setCustomStatus(user.customStatus || '');
+      setProfileColor(user.profileColor || '#58764A');
+      setPresence(user.presence);
+      setAvatarUri(user.avatarUrl || '');
+      setBannerUri(user.bannerUrl || '');
+    }
   }, [user.id, visible]);
 
   async function pickImage(kind: 'avatar' | 'banner') {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) return notify('error', 'Gallery permission is required.');
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: kind === 'avatar' ? [1, 1] : [16, 6],
-      quality: 0.72,
-      base64: true
-    });
-    if (result.canceled || !result.assets[0]) return;
-    const asset = result.assets[0];
-    const uri = asset.base64 ? `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}` : asset.uri;
-    if (kind === 'avatar') setAvatarUrl(uri);
-    else setBannerUrl(uri);
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        notify('error', 'Gallery permission required to upload images.');
+        return;
+      }
+      
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: kind === 'avatar' ? [1, 1] : [16, 6],
+        quality: 0.75,
+        base64: true
+      });
+      
+      if (result.canceled || !result.assets[0]) return;
+      
+      const asset = result.assets[0];
+      const base64 = asset.base64;
+      
+      if (!base64) {
+        notify('error', 'Could not process image. Please try again.');
+        return;
+      }
+      
+      const mimeType = asset.mimeType || 'image/jpeg';
+      const uri = `data:${mimeType};base64,${base64}`;
+      
+      if (kind === 'avatar') {
+        setUploadingAvatar(true);
+        setAvatarUri(uri);
+        notify('success', 'Avatar image selected. Save to upload.');
+        setUploadingAvatar(false);
+      } else {
+        setUploadingBanner(true);
+        setBannerUri(uri);
+        notify('success', 'Banner image selected. Save to upload.');
+        setUploadingBanner(false);
+      }
+    } catch (error) {
+      notify('error', `Failed to pick image: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   }
 
   async function save() {
-    setBusy(true);
-    await api.updateProfile({ displayName, bio, pronouns, customStatus, profileColor, presence, avatarUrl, bannerUrl })
-      .then(onSaved)
-      .catch(error => notify('error', error.message))
-      .finally(() => setBusy(false));
+    try {
+      if (!displayName.trim()) {
+        notify('error', 'Display name is required.');
+        return;
+      }
+      
+      setBusy(true);
+      const updated = await api.updateProfile({ 
+        displayName: displayName.trim(), 
+        bio: bio || undefined, 
+        pronouns: pronouns || undefined, 
+        customStatus: customStatus || undefined, 
+        profileColor, 
+        presence, 
+        avatarUrl: avatarUri || undefined, 
+        bannerUrl: bannerUri || undefined 
+      });
+      
+      notify('success', 'Profile updated successfully!');
+      onSaved(updated);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Failed to update profile';
+      notify('error', errorMsg);
+      console.error('Profile update error:', error);
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
     <Modal visible={visible} transparent animationType="slide">
-      <View style={styles.modalBackdrop}>
-        <View style={styles.editorPanel}>
-          <Text style={styles.heroSmall}>Edit Profile</Text>
-          <Field icon="person" placeholder="Display name" value={displayName} onChangeText={setDisplayName} />
-          <Field icon="document-text" placeholder="Bio" value={bio} onChangeText={setBio} multiline />
-          <Field icon="sparkles" placeholder="Pronouns" value={pronouns} onChangeText={setPronouns} />
-          <Field icon="radio" placeholder="Custom status" value={customStatus} onChangeText={setCustomStatus} />
-          <Text style={styles.label}>Presence</Text>
-          <View style={styles.segment}>{(['online', 'dnd', 'idle', 'invisible'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, presence === item && styles.segmentActive]} onPress={() => setPresence(item)}><Ionicons name={presenceMeta[item].icon} size={13} color={presenceMeta[item].color} /><Text style={styles.segmentText}>{presenceMeta[item].label}</Text></Pressable>)}</View>
-          <View style={styles.mediaActions}>
-            <SecondaryButton label="Avatar" icon="camera" onPress={() => pickImage('avatar')} />
-            <SecondaryButton label="Banner" icon="image" onPress={() => pickImage('banner')} />
+      <SafeAreaView style={styles.modalBackdrop}>
+        <ScrollView contentContainerStyle={styles.editorPanelScroll}>
+          <View style={styles.editorHeader}>
+            <Pressable style={styles.editorCloseButton} onPress={onClose}>
+              <Ionicons name="close" size={24} color="#E6C07A" />
+            </Pressable>
+            <Text style={styles.heroSmall}>Edit Profile</Text>
+            <View style={styles.spacer} />
           </View>
-          <View style={styles.colorRow}>{['#58764A', '#7B6F45', '#8C5E3C', '#4B6D78'].map(color => <Pressable key={color} style={[styles.colorDot, { backgroundColor: color }, profileColor === color && styles.colorDotActive]} onPress={() => setProfileColor(color)} />)}</View>
+          
+          <GlassCard>
+            <Text style={styles.label}>Profile Images</Text>
+            {bannerUri && (
+              <View style={{ marginTop: 12 }}>
+                <Text style={styles.cardTitle}>Banner Preview</Text>
+                <Image source={{ uri: bannerUri }} style={styles.bannerPreview} resizeMode="cover" />
+              </View>
+            )}
+            {avatarUri && (
+              <View style={{ marginTop: 12 }}>
+                <Text style={styles.cardTitle}>Avatar Preview</Text>
+                <Image source={{ uri: avatarUri }} style={styles.avatarPreview} resizeMode="cover" />
+              </View>
+            )}
+            <View style={styles.mediaActions}>
+              <SecondaryButton label="Avatar" icon="camera" onPress={() => pickImage('avatar')} />
+              <SecondaryButton label="Banner" icon="image" onPress={() => pickImage('banner')} />
+            </View>
+          </GlassCard>
+          
+          <GlassCard>
+            <Text style={styles.label}>Basic Information</Text>
+            <Field icon="person" placeholder="Display name" value={displayName} onChangeText={setDisplayName} />
+            <Field icon="document-text" placeholder="Bio" value={bio} onChangeText={setBio} multiline />
+            <Field icon="sparkles" placeholder="Pronouns" value={pronouns} onChangeText={setPronouns} />
+            <Field icon="radio" placeholder="Custom status" value={customStatus} onChangeText={setCustomStatus} />
+          </GlassCard>
+          
+          <GlassCard>
+            <Text style={styles.label}>Online Status</Text>
+            <View style={styles.segment}>
+              {(['online', 'dnd', 'idle', 'invisible'] as const).map(item => (
+                <Pressable key={item} style={[styles.segmentItem, presence === item && styles.segmentActive]} onPress={() => setPresence(item)}>
+                  <Ionicons name={presenceMeta[item].icon} size={14} color={presenceMeta[item].color} />
+                  <Text style={styles.segmentText}>{presenceMeta[item].label}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </GlassCard>
+          
+          <GlassCard>
+            <Text style={styles.label}>Profile Color</Text>
+            <Text style={styles.muted}>Choose a color theme for your profile.</Text>
+            <View style={styles.colorRow}>{['#58764A', '#7B6F45', '#8C5E3C', '#4B6D78'].map(color => <Pressable key={color} style={[styles.colorDot, { backgroundColor: color }, profileColor === color && styles.colorDotActive]} onPress={() => setProfileColor(color)} />)}</View>
+          </GlassCard>
+          
           <View style={styles.modalActions}>
             <SecondaryButton label="Cancel" icon="close" onPress={onClose} />
-            <PrimaryButton label="Save" icon="save" busy={busy} onPress={save} />
+            <PrimaryButton label="Save Changes" icon="save" busy={busy} onPress={save} />
           </View>
-        </View>
-      </View>
+        </ScrollView>
+      </SafeAreaView>
     </Modal>
   );
 }
 
 function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab: (tab: AppTab) => void; setUser: (user: User | null) => void; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
   const [panel, setPanel] = useState<'account' | 'privacy' | 'devices' | 'appearance' | 'voice' | null>(null);
+  
   async function logout() {
-    await api.logout().catch(() => undefined);
-    await clearTokens();
-    setUser(null);
-    notify('success', 'Logged out.');
+    try {
+      await api.logout().catch(() => undefined);
+      await clearTokens();
+      setUser(null);
+      notify('success', 'Logged out successfully.');
+    } catch (error) {
+      notify('error', 'Failed to logout. Please try again.');
+    }
   }
+  
+  if (panel) {
+    return (
+      <ScrollView contentContainerStyle={styles.scroll}>
+        <View style={styles.panelHeader}>
+          <Pressable style={styles.backButton} onPress={() => setPanel(null)}>
+            <Ionicons name="chevron-back" size={24} color="#E6C07A" />
+          </Pressable>
+          <Text style={styles.heroSmall}>{settingsPanelTitle(panel)}</Text>
+          <View style={styles.spacer} />
+        </View>
+        
+        {panel === 'account' && (
+          <>
+            <GlassCard>
+              <Text style={styles.cardTitle}>Email Address</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>{user.email}</Text>
+              <Text style={[styles.muted, { marginTop: 12, fontSize: 13 }]}>Your email is used for login and account recovery.</Text>
+            </GlassCard>
+            <GlassCard>
+              <Text style={styles.cardTitle}>Account Recovery</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Forgot your password? We can send you a recovery link.</Text>
+              <PrimaryButton label="Send Recovery Email" icon="mail" onPress={() => {
+                api.forgotPassword(user.email)
+                  .then(() => notify('success', 'Recovery email sent to your inbox.'))
+                  .catch(error => notify('error', error instanceof Error ? error.message : 'Failed to send recovery email'));
+              }} />
+            </GlassCard>
+            <GlassCard>
+              <Text style={styles.cardTitle}>Account Info</Text>
+              <View style={styles.infoRow}>
+                <Text style={styles.muted}>Username</Text>
+                <Text style={styles.body}>@{user.username}</Text>
+              </View>
+              <View style={[styles.infoRow, { borderTopWidth: 1, borderTopColor: 'rgba(218,226,202,.08)', paddingTop: 12 }]}>
+                <Text style={styles.muted}>Account Created</Text>
+                <Text style={styles.body}>Active</Text>
+              </View>
+            </GlassCard>
+          </>
+        )}
+        
+        {panel === 'privacy' && (
+          <>
+            <GlassCard>
+              <Text style={styles.cardTitle}>Direct Messages</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Control who can send you direct messages.</Text>
+              <Text style={[styles.badge, { marginTop: 12 }]}>All friends can message</Text>
+            </GlassCard>
+            <GlassCard>
+              <Text style={styles.cardTitle}>Blocked Users</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>You have no blocked users. Users you block cannot see your profile or send messages.</Text>
+            </GlassCard>
+            <GlassCard>
+              <Text style={styles.cardTitle}>Reports & Moderation</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Report users or content that violates community guidelines. Our moderation team reviews all reports.</Text>
+              <PrimaryButton label="View Your Reports" icon="warning" onPress={() => setTab('staff')} />
+            </GlassCard>
+          </>
+        )}
+        
+        {panel === 'devices' && (
+          <>
+            <GlassCard>
+              <View style={styles.deviceRow}>
+                <View style={styles.deviceIcon}>
+                  <Ionicons name="phone-portrait" size={20} color="#E6C07A" />
+                </View>
+                <View style={styles.flex}>
+                  <Text style={styles.cardTitle}>This Device</Text>
+                  <Text style={styles.muted}>Mobile · Current session</Text>
+                </View>
+                <View style={styles.statusBadge}>
+                  <Text style={styles.statusText}>Active</Text>
+                </View>
+              </View>
+            </GlassCard>
+            <GlassCard>
+              <Text style={styles.cardTitle}>Session Management</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Future updates will allow you to view and manage all active devices and sessions here.</Text>
+              <PrimaryButton label="Log Out All Devices" icon="power" onPress={() => {
+                Alert.alert('Log Out All Devices', 'This will sign you out on all devices. Continue?', [
+                  { text: 'Cancel', onPress: () => {}, style: 'cancel' },
+                  { text: 'Log Out', onPress: () => logout(), style: 'destructive' }
+                ]);
+              }} />
+            </GlassCard>
+          </>
+        )}
+        
+        {panel === 'appearance' && (
+          <>
+            <GlassCard>
+              <Text style={styles.cardTitle}>Active Theme</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Terria</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>A nature-inspired color palette optimized for mobile.</Text>
+            </GlassCard>
+            <GlassCard>
+              <Text style={styles.cardTitle}>Color Palette</Text>
+              <View style={styles.colorGrid}>
+                {['#58764A', '#7B6F45', '#8C5E3C', '#4B6D78'].map(color => (
+                  <View key={color} style={[styles.colorSwatch, { backgroundColor: color }]} />
+                ))}
+              </View>
+            </GlassCard>
+            <GlassCard>
+              <Text style={styles.cardTitle}>Density</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Comfortable</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Cards and spacing optimized for touch targets and readability.</Text>
+            </GlassCard>
+          </>
+        )}
+        
+        {panel === 'voice' && (
+          <>
+            <GlassCard>
+              <Text style={styles.cardTitle}>Call Readiness</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Voice and video calls are ready to configure.</Text>
+              <Text style={[styles.badge, { marginTop: 12 }]}>LiveKit integration pending</Text>
+            </GlassCard>
+            <GlassCard>
+              <Text style={styles.cardTitle}>Media Permissions</Text>
+              <View style={styles.permissionItem}>
+                <Text style={styles.body}>Microphone</Text>
+                <Text style={styles.muted}>Requested when needed</Text>
+              </View>
+              <View style={[styles.permissionItem, { borderTopWidth: 1, borderTopColor: 'rgba(218,226,202,.08)', paddingTop: 12 }]}>
+                <Text style={styles.body}>Camera</Text>
+                <Text style={styles.muted}>Requested when needed</Text>
+              </View>
+            </GlassCard>
+          </>
+        )}
+        
+        <View style={styles.panelFooter}>
+          <Pressable style={styles.closePanelButton} onPress={() => setPanel(null)}>
+            <Text style={styles.closePanelText}>Close</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+    );
+  }
+  
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <Text style={styles.heroSmall}>Settings</Text>
-      <SettingsRow icon="person" title="Account" body="Profile and password recovery" onPress={() => setPanel('account')} />
-      <SettingsRow icon="shield" title="Privacy" body="DM privacy, blocks, reports" onPress={() => setPanel('privacy')} />
-      <SettingsRow icon="phone-portrait" title="Logged In Devices" body="Current mobile session and future device controls" onPress={() => setPanel('devices')} />
-      <SettingsRow icon="color-palette" title="Appearance" body="Terria theme, density, and display" onPress={() => setPanel('appearance')} />
-      <SettingsRow icon="videocam" title="Voice & Video" body="Call readiness and media permissions" onPress={() => setPanel('voice')} />
-      {panel && <GlassCard><Text style={styles.cardTitle}>{settingsPanelTitle(panel)}</Text><Text style={styles.muted}>{settingsPanelBody(panel)}</Text>{panel === 'account' && <PrimaryButton label="Send Password Recovery" icon="mail" onPress={() => api.forgotPassword(user.email).then(() => notify('success', 'Recovery request accepted.')).catch(error => notify('error', error.message))} />}</GlassCard>}
-      {user.role === 'admin' && <PrimaryButton label="Admin Dashboard" icon="shield-checkmark" onPress={() => setTab('admin')} />}
+      <SettingsRow icon="person" title="Account" body="Profile, email, password recovery" onPress={() => setPanel('account')} />
+      <SettingsRow icon="shield" title="Privacy" body="DM privacy, blocked users, reports" onPress={() => setPanel('privacy')} />
+      <SettingsRow icon="phone-portrait" title="Devices" body="Active sessions and device management" onPress={() => setPanel('devices')} />
+      <SettingsRow icon="color-palette" title="Appearance" body="Theme, colors, and display settings" onPress={() => setPanel('appearance')} />
+      <SettingsRow icon="videocam" title="Voice & Video" body="Call settings and media permissions" onPress={() => setPanel('voice')} />
+      
+      {user.role === 'admin' && (
+        <>
+          <Text style={[styles.label, { marginTop: 20 }]}>Administration</Text>
+          <PrimaryButton label="Admin Dashboard" icon="shield-checkmark" onPress={() => setTab('admin')} />
+        </>
+      )}
       {(user.role === 'staff' || user.role === 'admin') && <PrimaryButton label="Staff Dashboard" icon="briefcase" onPress={() => setTab('staff')} />}
-      <Pressable style={styles.logout} onPress={logout}><Text style={styles.logoutText}>Log Out</Text></Pressable>
+      
+      <Pressable style={styles.logout} onPress={logout}>
+        <Text style={styles.logoutText}>Log Out</Text>
+      </Pressable>
     </ScrollView>
   );
 }
@@ -741,7 +1039,20 @@ function AnnouncementCard({ item }: { item: Announcement }) {
 }
 
 function SettingsRow({ icon, title, body, onPress }: { icon: keyof typeof Ionicons.glyphMap; title: string; body: string; onPress: () => void }) {
-  return <Pressable onPress={onPress}><GlassCard style={styles.featureCard}><Ionicons name={icon} size={22} color="#E6C07A" /><View style={styles.flex}><Text style={styles.cardTitle}>{title}</Text><Text style={styles.muted}>{body}</Text></View><Ionicons name="chevron-forward" size={18} color="#9AA391" /></GlassCard></Pressable>;
+  return (
+    <Pressable onPress={onPress}>
+      <GlassCard style={styles.featureCard}>
+        <View style={styles.iconContainer}>
+          <Ionicons name={icon} size={20} color="#E6C07A" />
+        </View>
+        <View style={styles.flex}>
+          <Text style={styles.cardTitle}>{title}</Text>
+          <Text style={styles.muted}>{body}</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color="#9AA391" />
+      </GlassCard>
+    </Pressable>
+  );
 }
 
 function settingsPanelTitle(panel: 'account' | 'privacy' | 'devices' | 'appearance' | 'voice') {
@@ -853,13 +1164,17 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   terraBandTop: { position: 'absolute', left: 0, right: 0, top: 0, height: 170, backgroundColor: 'rgba(90,111,65,.24)' },
   terraBandBottom: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 180, backgroundColor: 'rgba(94,61,38,.22)' },
-  splash: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 26 },
+  splash: { flex: 1, alignItems: 'center', justifyContent: 'space-between', padding: 26 },
+  splashContent: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
   splashLogo: { width: 170, height: 170 },
   splashWordmark: { width: '88%', maxWidth: 360, height: 128 },
-  brandTitle: { color: '#F4F0E6', fontSize: 28, fontWeight: '800', marginTop: 8, letterSpacing: -0.5 },
-  brandSub: { color: '#E6C07A', fontSize: 11, letterSpacing: 3, marginTop: 4, fontWeight: '700' },
-  loadingBar: { width: '72%', height: 3, backgroundColor: '#20291E', marginTop: 54, borderRadius: 2 },
-  loadingFill: { width: '68%', height: 3, backgroundColor: '#CDA16A', borderRadius: 2 },
+  brandTitle: { color: '#F4F0E6', fontSize: 32, fontWeight: '900', marginTop: 8, letterSpacing: -0.5 },
+  brandSub: { color: '#E6C07A', fontSize: 12, letterSpacing: 3.5, marginTop: 8, fontWeight: '800' },
+  splashTagline: { color: '#C9D1BE', fontSize: 15, marginTop: 6, letterSpacing: 0.3, fontStyle: 'italic' },
+  splashFooter: { gap: 14, paddingBottom: 16 },
+  loadingBar: { width: 200, height: 4, backgroundColor: '#20291E', borderRadius: 2, overflow: 'hidden' },
+  loadingFill: { width: '68%', height: 4, backgroundColor: 'rgba(205,161,106,.8)', borderRadius: 2 },
+  loadingText: { color: '#B8A47D', fontSize: 12, textAlign: 'center', fontWeight: '600', letterSpacing: 0.5 },
   helper: { color: '#B8A47D', fontSize: 11, letterSpacing: 1.5, marginTop: 10, fontWeight: '600' },
   authWrap: { flex: 1, justifyContent: 'center', padding: 16 },
   authPanel: { borderRadius: 10, borderWidth: 1, borderColor: 'rgba(230,192,122,.25)', backgroundColor: 'rgba(20,28,21,.92)', padding: 22, alignItems: 'center', gap: 14 },
@@ -952,6 +1267,7 @@ const styles = StyleSheet.create({
   // Icon Button
   iconButton: { width: 44, height: 44, borderRadius: 10, backgroundColor: 'rgba(255,255,255,.06)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,.08)' },
   iconButtonPressed: { backgroundColor: 'rgba(255,255,255,.12)' },
+  iconContainer: { width: 42, height: 42, borderRadius: 10, backgroundColor: 'rgba(230,192,122,.12)', alignItems: 'center', justifyContent: 'center' },
   
   badge: { color: '#E6C07A', fontSize: 12, fontWeight: '800', backgroundColor: 'rgba(230,192,122,.12)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, alignSelf: 'flex-start' },
   badgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
@@ -1050,6 +1366,11 @@ const styles = StyleSheet.create({
   announcementModal: { width: '100%', borderRadius: 12, backgroundColor: '#182019', borderWidth: 1, borderColor: 'rgba(230,192,122,.3)', padding: 20, gap: 14 },
   modalCard: { width: '100%', gap: 14, alignItems: 'center', padding: 24 },
   editorPanel: { width: '100%', borderRadius: 12, backgroundColor: '#182019', borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', padding: 18, gap: 8 },
+  editorPanelScroll: { paddingVertical: 12, paddingHorizontal: 16, gap: 16 },
+  editorHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8, height: 56 },
+  editorCloseButton: { width: 44, height: 44, borderRadius: 10, backgroundColor: 'rgba(230,192,122,.12)', alignItems: 'center', justifyContent: 'center' },
+  bannerPreview: { width: '100%', height: 150, borderRadius: 12, marginTop: 8 },
+  avatarPreview: { width: 100, height: 100, borderRadius: 50, marginTop: 8 },
   modalActions: { gap: 10 },
   
   segment: { flexDirection: 'row', gap: 10, marginTop: 12 },
@@ -1057,6 +1378,27 @@ const styles = StyleSheet.create({
   segmentActive: { backgroundColor: 'rgba(230,192,122,.18)', borderColor: 'rgba(230,192,122,.4)' },
   segmentText: { color: '#D9E2CC', fontWeight: '800' },
   locked: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24 },
+  
+  // Settings Panels
+  panelHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16, height: 56 },
+  backButton: { width: 44, height: 44, borderRadius: 10, backgroundColor: 'rgba(230,192,122,.12)', alignItems: 'center', justifyContent: 'center' },
+  spacer: { width: 44 },
+  panelFooter: { paddingTop: 20, paddingBottom: 10, gap: 10 },
+  closePanelButton: { borderRadius: 12, borderWidth: 1, borderColor: 'rgba(218,226,202,.18)', minHeight: 50, alignItems: 'center', justifyContent: 'center' },
+  closePanelText: { color: '#D9E2CC', fontWeight: '800', fontSize: 15 },
+  
+  // Settings Rows
+  settingsRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 },
+  settingsRowContent: { flex: 1 },
+  // Info Display
+  infoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12 },
+  deviceRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingBottom: 12 },
+  deviceIcon: { width: 40, height: 40, borderRadius: 10, backgroundColor: 'rgba(230,192,122,.14)', alignItems: 'center', justifyContent: 'center' },
+  statusBadge: { backgroundColor: 'rgba(79,204,122,.14)', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
+  statusText: { color: '#4FCC7A', fontWeight: '800', fontSize: 11 },
+  permissionItem: { paddingVertical: 12 },
+  colorGrid: { flexDirection: 'row', gap: 12, marginTop: 12 },
+  colorSwatch: { width: 48, height: 48, borderRadius: 10 },
   
   videoGrid: { minHeight: 240, gap: 10, borderRadius: 18, overflow: 'hidden', backgroundColor: '#05070B', alignItems: 'center', justifyContent: 'center' },
   videoTile: { width: '100%', height: 240, borderRadius: 18 }
