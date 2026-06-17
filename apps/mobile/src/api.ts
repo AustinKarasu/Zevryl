@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
-import type { Announcement, DashboardStats, FriendState, Group, Message, Report, User } from './types';
+import type { Announcement, BlogPost, Conversation, DashboardStats, FriendState, Group, Message, Report, User } from './types';
 
 const configuredUrl = normalizeApiUrl(
   process.env.EXPO_PUBLIC_API_URL ||
@@ -88,6 +88,8 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   me: () => request<User>('/me'),
+  updateProfile: (payload: Partial<Pick<User, 'displayName' | 'bio' | 'pronouns' | 'customStatus' | 'profileColor'>>) =>
+    request<User>('/me/profile', { method: 'PATCH', body: JSON.stringify(payload) }),
   logout: () => request('/auth/logout', { method: 'POST' }),
   forgotPassword: (email: string) => request('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
   friends: () => request<FriendState>('/friends'),
@@ -99,9 +101,13 @@ export const api = {
   createGroup: (payload: { name: string; description: string; friendIds: string[] }) =>
     request<Group>('/groups', { method: 'POST', body: JSON.stringify(payload) }),
   latestAnnouncement: () => request<Announcement | null>('/announcements/latest'),
+  announcements: () => request<Announcement[]>('/announcements'),
   markAnnouncementRead: (id: string) => request(`/announcements/${id}/read`, { method: 'POST' }),
+  blogs: () => request<BlogPost[]>('/blogs'),
+  conversations: () => request<Conversation[]>('/conversations'),
+  createDm: (userId: string) => request<Conversation>('/conversations/dm', { method: 'POST', body: JSON.stringify({ userId }) }),
   messages: (conversationId: string) => request<Message[]>(`/messages/${conversationId}`),
-  sendMessage: (payload: { conversationId: string; body: string }) =>
+  sendMessage: (payload: { conversationId: string; body: string; type?: Message['type']; attachmentUrl?: string }) =>
     request<Message>('/messages', { method: 'POST', body: JSON.stringify(payload) }),
   editMessage: (id: string, body: string) => request<Message>(`/messages/${id}`, { method: 'PATCH', body: JSON.stringify({ body }) }),
   deleteMessage: (id: string) => request(`/messages/${id}`, { method: 'DELETE' }),
@@ -113,5 +119,11 @@ export const api = {
   adminAnnouncements: () => request<Announcement[]>('/admin/announcements'),
   createAnnouncement: (payload: { title: string; body: string; isPopup: boolean; pinToHome: boolean }) =>
     request<Announcement>('/admin/announcements', { method: 'POST', body: JSON.stringify(payload) }),
+  createBlog: (payload: { title: string; body: string; category: string; pinned: boolean }) =>
+    request<BlogPost>('/admin/blogs', { method: 'POST', body: JSON.stringify(payload) }),
+  grantBadge: (payload: { username: string; badge: string }) =>
+    request<User>('/admin/badges/grant', { method: 'POST', body: JSON.stringify(payload) }),
+  setRole: (payload: { username: string; role: User['role'] }) =>
+    request<User>('/admin/users/role', { method: 'POST', body: JSON.stringify(payload) }),
   reports: () => request<Report[]>('/staff/reports')
 };

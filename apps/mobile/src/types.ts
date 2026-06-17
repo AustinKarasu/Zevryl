@@ -49,13 +49,23 @@ export type Message = {
   conversationId: string;
   senderId: string;
   body: string;
-  type: 'text' | 'image' | 'video' | 'file';
+  type: 'text' | 'image' | 'video' | 'file' | 'gif';
   attachmentUrl?: string;
   isEdited: boolean;
   deletedAt?: string;
   createdAt: string;
   readBy: string[];
   reactions: Record<string, string[]>;
+};
+
+export type Conversation = {
+  id: string;
+  kind: 'dm' | 'group';
+  title: string;
+  subtitle?: string;
+  unreadCount: number;
+  participants: User[];
+  lastMessage?: Message;
 };
 
 export type Announcement = {
@@ -66,6 +76,16 @@ export type Announcement = {
   isPopup: boolean;
   pinToHome: boolean;
   readAt?: string;
+};
+
+export type BlogPost = {
+  id: string;
+  title: string;
+  body: string;
+  category: string;
+  authorName: string;
+  createdAt: string;
+  pinned: boolean;
 };
 
 export type Report = {
@@ -81,4 +101,6 @@ export type DashboardStats = {
   reports: number;
   activeGroups: number;
   systemHealth: number;
+  announcements?: number;
+  blogs?: number;
 };
