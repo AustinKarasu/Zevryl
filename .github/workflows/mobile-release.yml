@@ -18,11 +18,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-          cache: gradle
+      - run: java -version
       - run: npm ci
       - run: npm run typecheck
       - name: Generate Android project
