@@ -2,7 +2,7 @@ const app = {
   expo: {
     name: 'Zevryl',
     slug: 'zevryl',
-    version: '0.1.9',
+    version: '0.1.10',
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'dark',
@@ -12,7 +12,7 @@ const app = {
       backgroundColor: '#05070B'
     },
     assetBundlePatterns: ['**/*'],
-    plugins: [],
+    plugins: ['./plugins/withAndroidNetworkConfig'],
     ios: {
       supportsTablet: true,
       bundleIdentifier: 'com.zevryl.mobile',
@@ -24,7 +24,9 @@ const app = {
     },
     android: {
       package: 'com.zevryl.mobile',
-      permissions: ['CAMERA', 'RECORD_AUDIO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VIDEO']
+      versionCode: 10,
+      usesCleartextTraffic: true,
+      permissions: ['INTERNET', 'CAMERA', 'RECORD_AUDIO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VIDEO']
     },
     extra: {
       apiUrl: ''
