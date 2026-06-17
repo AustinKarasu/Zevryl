@@ -2,7 +2,7 @@ const app = {
   expo: {
     name: 'Zevryl',
     slug: 'zevryl',
-    version: '0.1.8',
+    version: '0.1.9',
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'dark',
@@ -27,7 +27,7 @@ const app = {
       permissions: ['CAMERA', 'RECORD_AUDIO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VIDEO']
     },
     extra: {
-      apiUrl: 'http://localhost:4100'
+      apiUrl: ''
     }
   }
 };

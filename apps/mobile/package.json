@@ -1,6 +1,6 @@
 {
   "name": "@zevryl/mobile",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "main": "index.ts",
   "scripts": {
@@ -11,7 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prebuild:android": "expo prebuild --platform android --clean --non-interactive",
     "patch:android-gradle": "node scripts/patch-android-gradle.cjs",
-    "build:android:release": "npm run prebuild:android && npm run patch:android-gradle && cd android && gradlew.bat assembleRelease"
+    "build:android:release": "node scripts/require-release-api-url.cjs && npm run prebuild:android && npm run patch:android-gradle && cd android && gradlew.bat assembleRelease"
   },
   "dependencies": {
     "@expo/vector-icons": "15.1.1",

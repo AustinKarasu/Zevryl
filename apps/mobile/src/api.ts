@@ -2,10 +2,17 @@ import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 import type { Announcement, DashboardStats, FriendState, Group, Message, Report, User } from './types';
 
-const configuredUrl =
+const configuredUrl = normalizeApiUrl(
   process.env.EXPO_PUBLIC_API_URL ||
-  (Constants.expoConfig?.extra?.apiUrl as string | undefined) ||
-  'http://localhost:4100';
+    (Constants.expoConfig?.extra?.apiUrl as string | undefined) ||
+    ''
+);
+
+function normalizeApiUrl(url?: string) {
+  const trimmed = url?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.replace(/\/+$/, '');
+}
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -28,11 +35,31 @@ export async function clearTokens() {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  if (!configuredUrl) {
+    throw new ApiError(0, 'Backend API URL is not configured for this build.');
+  }
+
   const headers = new Headers(init.headers);
   headers.set('Content-Type', 'application/json');
   const accessToken = await token();
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
-  const response = await fetch(`${configuredUrl}${path}`, { ...init, headers });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  let response: Response;
+  try {
+    response = await fetch(`${configuredUrl}${path}`, { ...init, headers, signal: controller.signal });
+  } catch (error) {
+    const timedOut = error instanceof Error && error.name === 'AbortError';
+    throw new ApiError(
+      0,
+      timedOut
+        ? `Zevryl backend did not respond at ${configuredUrl}.`
+        : `Cannot reach Zevryl backend at ${configuredUrl}. Check that the API is online and this device can access it.`
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+
   if (!response.ok) {
     let message = 'Something went wrong. Please try again.';
     try {
@@ -48,7 +75,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  url: configuredUrl,
+  url: configuredUrl ?? 'Not configured',
   login: (emailOrUsername: string, password: string) =>
     request<{ user: User; accessToken: string; refreshToken: string }>('/auth/login', {
       method: 'POST',
