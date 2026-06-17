@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
+import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useState } from 'react';
@@ -8,6 +9,7 @@ import {
   Alert,
   Image,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -33,6 +35,7 @@ import type {
 } from './types';
 
 const logo = require('../assets/zevryl-logo.png');
+const wordmark = require('../assets/zevryl-wordmark.png');
 
 type Loadable<T> = { loading: boolean; data: T; error?: string };
 type NoticeTone = 'error' | 'success' | 'info';
@@ -41,6 +44,23 @@ type Notice = { tone: NoticeTone; text: string } | null;
 const emptyFriends: FriendState = { friends: [], incoming: [], outgoing: [], blocked: [] };
 const emptyStats: DashboardStats = { users: 0, reports: 0, activeGroups: 0, systemHealth: 0, announcements: 0, blogs: 0 };
 const emojis = ['😀', '🔥', '✅', '💬', '⭐', '🛡️', '🌿', '⚒️'];
+const badgeIcons: Record<string, keyof typeof Ionicons.glyphMap> = {
+  Founder: 'diamond',
+  Admin: 'shield-checkmark',
+  Mod: 'hammer',
+  Staff: 'briefcase',
+  Member: 'person',
+  Vip: 'star',
+  Partner: 'people',
+  Demo: 'flask'
+};
+const presenceMeta: Record<User['presence'], { label: string; icon: keyof typeof Ionicons.glyphMap; color: string }> = {
+  online: { label: 'Online', icon: 'ellipse', color: '#4FCC7A' },
+  dnd: { label: 'Do Not Disturb', icon: 'remove-circle', color: '#E15E55' },
+  idle: { label: 'Idle', icon: 'moon', color: '#D9A441' },
+  invisible: { label: 'Invisible', icon: 'ellipse-outline', color: '#8D9688' },
+  offline: { label: 'Offline', icon: 'ellipse-outline', color: '#8D9688' }
+};
 const gifs = [
   'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExb2d4MzgzdTBqOWc3eGxxZGNzYnRydjF0dDhtczlmbzhmOWUwajU2MiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/111ebonMs90YLu/giphy.gif',
   'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExZmRnOWlzZ2l3enV4Mmpyc2t6Zm82dzV5N2Vzd3NlNXQ2Ynpmb3pyNCZlcD12MV9naWZzX3NlYXJjaCZjdD1n/l0HlNaQ6gWfllcjDO/giphy.gif',
@@ -159,8 +179,7 @@ function SplashScreen() {
   return (
     <TerraShell>
       <SafeAreaView style={styles.splash}>
-        <Image source={logo} style={styles.splashLogo} resizeMode="contain" />
-        <Text style={styles.brandTitle}>Zevryl</Text>
+        <Image source={wordmark} style={styles.splashWordmark} resizeMode="contain" />
         <Text style={styles.brandSub}>TERRIA NETWORK</Text>
         <View style={styles.loadingBar}><View style={styles.loadingFill} /></View>
       </SafeAreaView>
@@ -206,8 +225,7 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
     <TerraShell>
       <SafeAreaView style={styles.authWrap}>
         <View style={styles.authPanel}>
-          <Image source={logo} style={styles.authLogo} resizeMode="contain" />
-          <Text style={styles.brandTitle}>Zevryl</Text>
+          <Image source={wordmark} style={styles.authWordmark} resizeMode="contain" />
           <Text style={styles.authText}>A grounded Terria workspace for friends, staff, updates, and secure DMs.</Text>
           {mode === 'register' && <Field icon="person" placeholder="Full name" value={fullName} onChangeText={setFullName} />}
           <Field icon="mail" placeholder="Email or username" value={email} onChangeText={setEmail} autoCapitalize="none" />
@@ -229,6 +247,7 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
 function HomeScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
   const [announcements, setAnnouncements] = useState<Loadable<Announcement[]>>({ loading: true, data: [] });
   const [blogs, setBlogs] = useState<Loadable<BlogPost[]>>({ loading: true, data: [] });
+  const [view, setView] = useState<'updates' | 'support'>('updates');
 
   const load = () => {
     Promise.all([api.announcements(), api.blogs()])
@@ -248,30 +267,40 @@ function HomeScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.homeHeader}>
         <View>
-          <Text style={styles.kicker}>Welcome back</Text>
-          <Text style={styles.hero}>{user.displayName}</Text>
+          <Text style={styles.kicker}>Terria Network</Text>
+          <Text style={styles.hero}>Home</Text>
         </View>
-        <View style={styles.rolePill}><Text style={styles.roleText}>{user.role}</Text></View>
+        <StatusPill presence={user.presence} />
       </View>
-      <StatsGrid values={[
-        ['Presence', user.presence],
-        ['Badges', String(user.badges.length)],
-        ['Announcements', String(announcements.data.length)],
-        ['Posts', String(blogs.data.length)]
-      ]} />
-      <SectionTitle title="Announcements" action="Refresh" onPress={load} />
-      {announcements.loading ? <LoadingState /> : announcements.error ? <ErrorState message={announcements.error} onRetry={load} /> : announcements.data.length === 0 ? <EmptyState title="No announcements" body="Official updates will appear here." /> : announcements.data.map(item => (
-        <AnnouncementCard key={item.id} item={item} />
-      ))}
-      <SectionTitle title="Blog" />
-      {blogs.loading ? <LoadingState /> : blogs.data.length === 0 ? <EmptyState title="No posts yet" body="Admin blog posts will appear here." /> : blogs.data.map(post => (
-        <GlassCard key={post.id} style={styles.postCard}>
-          <View style={styles.postTop}><Text style={styles.badge}>{post.category}</Text><Text style={styles.meta}>{new Date(post.createdAt).toLocaleDateString()}</Text></View>
-          <Text style={styles.cardTitle}>{post.title}</Text>
-          <Text style={styles.body}>{post.body}</Text>
-          <Text style={styles.meta}>By {post.authorName}</Text>
-        </GlassCard>
-      ))}
+      <View style={styles.segment}>
+        <Pressable style={[styles.segmentItem, view === 'updates' && styles.segmentActive]} onPress={() => setView('updates')}><Text style={styles.segmentText}>Updates</Text></Pressable>
+        <Pressable style={[styles.segmentItem, view === 'support' && styles.segmentActive]} onPress={() => setView('support')}><Text style={styles.segmentText}>Support</Text></Pressable>
+      </View>
+      {view === 'support' ? (
+        <>
+          <FeatureCard title="Need help?" body="Use staff reports for safety issues, or DM a staff member when available." icon="help-circle" />
+          <FeatureCard title="Account recovery" body="Forgot password accepts recovery requests. Staff can review support cases from the dashboard." icon="key" />
+          <FeatureCard title="Community safety" body="Reports, badges, roles, and announcements are managed through role-gated tools." icon="shield-checkmark" />
+        </>
+      ) : (
+        <>
+          <SectionTitle title="Announcements" action="Refresh" onPress={load} />
+          {announcements.loading ? <LoadingState /> : announcements.error ? <ErrorState message={announcements.error} onRetry={load} /> : announcements.data.length === 0 ? <EmptyState title="No announcements" body="Official updates will appear here." /> : announcements.data.map(item => (
+            <AnnouncementCard key={item.id} item={item} />
+          ))}
+          <SectionTitle title="Posts" />
+          {blogs.loading ? <LoadingState /> : blogs.data.length === 0 ? <EmptyState title="No posts yet" body="Admin blog posts will appear here." /> : blogs.data.map(post => (
+            <GlassCard key={post.id} style={styles.postCard}>
+              {post.imageUrl ? <Image source={{ uri: post.imageUrl }} style={styles.postImage} resizeMode="cover" /> : null}
+              <View style={styles.postTop}><Text style={styles.badge}>{post.category}</Text><Text style={styles.meta}>{new Date(post.createdAt).toLocaleDateString()}</Text></View>
+              <Text style={styles.cardTitle}>{post.title}</Text>
+              <RichText text={post.body} />
+              {post.linkUrl ? <Pressable onPress={() => openLink(post.linkUrl)}><Text style={styles.link}>{post.linkLabel || post.linkUrl}</Text></Pressable> : null}
+              <Text style={styles.meta}>By {post.authorName}</Text>
+            </GlassCard>
+          ))}
+        </>
+      )}
     </ScrollView>
   );
 }
@@ -388,6 +417,19 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
       .catch(error => notify('error', error.message));
   }
 
+  async function pickChatImage(camera = false) {
+    if (!selected) return notify('error', 'Open a DM first.');
+    const permission = camera ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) return notify('error', camera ? 'Camera permission is required.' : 'Gallery permission is required.');
+    const result = camera
+      ? await ImagePicker.launchCameraAsync({ allowsEditing: true, quality: 0.74, base64: true })
+      : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, quality: 0.74, base64: true });
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    const uri = asset.base64 ? `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}` : asset.uri;
+    await send({ type: 'image', attachmentUrl: uri, body: 'Image' });
+  }
+
   async function remove(message: Message) {
     await api.deleteMessage(message.id)
       .then(() => setMessages(prev => prev.filter(item => item.id !== message.id)))
@@ -397,43 +439,57 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
       <View style={styles.chatLayout}>
-        <View style={styles.dmRail}>
-          <Text style={styles.label}>DMs</Text>
-          {conversations.loading ? <ActivityIndicator color="#CDA16A" /> : conversations.data.length === 0 ? <Text style={styles.emptyRail}>No DMs</Text> : conversations.data.map(item => (
-            <Pressable key={item.id} style={[styles.dmItem, selected?.id === item.id && styles.dmItemActive]} onPress={() => setSelected(item)}>
-              <View style={styles.avatarSmall}><Text style={styles.avatarText}>{item.title.slice(0, 1)}</Text></View>
-              <View style={styles.flex}>
-                <Text style={styles.dmTitle} numberOfLines={1}>{item.title}</Text>
-                <Text style={styles.meta} numberOfLines={1}>{item.lastMessage?.body || item.subtitle || 'No messages yet'}</Text>
-              </View>
-            </Pressable>
-          ))}
-        </View>
+        {!selected ? (
+          <ScrollView contentContainerStyle={styles.dmListFull}>
+            <SectionTitle title="Direct Messages" action="Refresh" onPress={loadConversations} />
+            {conversations.loading ? <LoadingState /> : conversations.data.length === 0 ? <EmptyState title="No DMs" body="Open Friends and start a DM." /> : conversations.data.map(item => (
+              <Pressable key={item.id} style={styles.dmCard} onPress={() => setSelected(item)}>
+                <View style={styles.avatar}><Text style={styles.avatarText}>{item.title.slice(0, 1)}</Text></View>
+                <View style={styles.flex}>
+                  <Text style={styles.dmTitle}>{item.title}</Text>
+                  <Text style={styles.meta} numberOfLines={1}>{item.lastMessage?.body || item.subtitle || 'No messages yet'}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color="#9AA391" />
+              </Pressable>
+            ))}
+          </ScrollView>
+        ) : (
         <View style={styles.thread}>
           <View style={styles.threadHeader}>
-            <Text style={styles.cardTitle}>{selected?.title || 'Direct Messages'}</Text>
-            <Text style={styles.meta}>{selected ? 'Private channel' : 'Add a friend to start chatting'}</Text>
+            <IconButton icon="chevron-back" onPress={() => setSelected(null)} />
+            <View style={styles.flex}>
+              <Text style={styles.cardTitle}>{selected.title}</Text>
+              <Text style={styles.meta}>Private DM</Text>
+            </View>
+            <IconButton icon="call" onPress={() => notify('info', 'Voice call setup is ready for LiveKit configuration.')} />
+            <IconButton icon="videocam" onPress={() => notify('info', 'Video call setup is ready for LiveKit configuration.')} />
           </View>
           <ScrollView contentContainerStyle={styles.messageList}>
-            {!selected ? <EmptyState title="No DM selected" body="Open Friends, add someone, then start a DM." /> : messages.length === 0 ? <EmptyState title="No messages" body="Send the first message, emoji, or GIF." /> : messages.map(message => (
+            {messages.length === 0 ? <EmptyState title="No messages" body="Send the first message, emoji, sticker, GIF, or image." /> : messages.map(message => {
+              const author = selected.participants.find(p => p.id === message.senderId) || user;
+              return (
               <Pressable key={message.id} onLongPress={() => message.senderId === user.id && remove(message)} style={[styles.messageRow, message.senderId === user.id && styles.messageOwn]}>
+                <View style={styles.messageAuthor}><Text style={styles.messageName}>@{author.username}</Text>{normalizeBadges(author.badges).slice(0, 2).map(b => <BadgeIcon key={b} badge={b} />)}</View>
                 <View style={[styles.messageBubble, message.senderId === user.id && styles.messageBubbleOwn]}>
-                  {message.type === 'gif' && message.attachmentUrl ? <Image source={{ uri: message.attachmentUrl }} style={styles.gifImage} resizeMode="cover" /> : null}
+                  {(message.type === 'gif' || message.type === 'image') && message.attachmentUrl ? <Image source={{ uri: message.attachmentUrl }} style={styles.chatImage} resizeMode="cover" /> : null}
                   {message.body ? <Text style={styles.body}>{message.body}</Text> : null}
                   <Text style={styles.meta}>{message.isEdited ? 'edited · ' : ''}{new Date(message.createdAt).toLocaleTimeString()}</Text>
                 </View>
               </Pressable>
-            ))}
+            );})}
           </ScrollView>
           {showEmoji && <View style={styles.pickerRow}>{emojis.map(item => <Pressable key={item} style={styles.pickerButton} onPress={() => setBody(prev => `${prev}${item}`)}><Text style={styles.emojiText}>{item}</Text></Pressable>)}</View>}
           {showGif && <View style={styles.gifPicker}>{gifs.map(item => <Pressable key={item} onPress={() => send({ type: 'gif', attachmentUrl: item, body: 'GIF' })}><Image source={{ uri: item }} style={styles.gifThumb} /></Pressable>)}</View>}
           <View style={styles.composer}>
             <IconButton icon="happy" onPress={() => { setShowEmoji(prev => !prev); setShowGif(false); }} />
             <IconButton icon="images" onPress={() => { setShowGif(prev => !prev); setShowEmoji(false); }} />
+            <IconButton icon="image" onPress={() => pickChatImage(false)} />
+            <IconButton icon="camera" onPress={() => pickChatImage(true)} />
             <TextInput style={styles.composerInput} placeholder="Message" placeholderTextColor="#899486" value={body} onChangeText={setBody} multiline />
             <IconButton icon="send" onPress={() => send()} />
           </View>
         </View>
+        )}
       </View>
     </KeyboardAvoidingView>
   );
@@ -445,15 +501,18 @@ function ProfileScreen({ user, setUser, notify }: { user: User; setUser: (user: 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <GlassCard style={styles.profileHero}>
-        <View style={[styles.profileBanner, { backgroundColor: user.profileColor || '#58764A' }]} />
-        <Image source={logo} style={styles.profileLogo} />
+        {user.bannerUrl ? <Image source={{ uri: user.bannerUrl }} style={styles.profileBannerImage} resizeMode="cover" /> : <View style={[styles.profileBanner, { backgroundColor: user.profileColor || '#58764A' }]} />}
+        <View>
+          <Image source={user.avatarUrl ? { uri: user.avatarUrl } : logo} style={styles.profileLogo} />
+          <View style={[styles.statusDot, { backgroundColor: presenceMeta[user.presence].color }]} />
+        </View>
         <Text style={styles.profileName}>{user.displayName}</Text>
         <Text style={styles.muted}>@{user.username}</Text>
-        <View style={styles.badgeRow}>{user.badges.length ? user.badges.map(badge => <Text key={badge} style={styles.badgeChip}>{badge}</Text>) : <Text style={styles.badgeChip}>Member</Text>}</View>
+        <View style={styles.badgeRow}>{normalizeBadges(user.badges).map(badge => <BadgeChip key={badge} badge={badge} />)}</View>
         <PrimaryButton label="Edit Profile" icon="create" onPress={() => setEditing(true)} />
       </GlassCard>
-      <FeatureCard title="Biography" body={user.bio || 'No bio yet.'} icon="document-text" />
-      <FeatureCard title="Status" body={user.customStatus || user.presence} icon="radio" />
+      <GlassCard><Text style={styles.cardTitle}>Biography</Text><RichText text={user.bio || 'No bio yet.'} /></GlassCard>
+      <FeatureCard title="Status" body={user.customStatus || presenceMeta[user.presence].label} icon={presenceMeta[user.presence].icon} />
       <ProfileEditor visible={editing} user={user} onClose={() => setEditing(false)} onSaved={(next) => { setUser(next); setEditing(false); notify('success', 'Profile updated.'); }} notify={notify} />
     </ScrollView>
   );
@@ -465,15 +524,35 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
   const [pronouns, setPronouns] = useState(user.pronouns || '');
   const [customStatus, setCustomStatus] = useState(user.customStatus || '');
   const [profileColor, setProfileColor] = useState(user.profileColor || '#58764A');
+  const [presence, setPresence] = useState<User['presence']>(user.presence);
+  const [avatarUrl, setAvatarUrl] = useState(user.avatarUrl || '');
+  const [bannerUrl, setBannerUrl] = useState(user.bannerUrl || '');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    setDisplayName(user.displayName); setBio(user.bio); setPronouns(user.pronouns || ''); setCustomStatus(user.customStatus || ''); setProfileColor(user.profileColor || '#58764A');
+    setDisplayName(user.displayName); setBio(user.bio); setPronouns(user.pronouns || ''); setCustomStatus(user.customStatus || ''); setProfileColor(user.profileColor || '#58764A'); setPresence(user.presence); setAvatarUrl(user.avatarUrl || ''); setBannerUrl(user.bannerUrl || '');
   }, [user.id, visible]);
+
+  async function pickImage(kind: 'avatar' | 'banner') {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) return notify('error', 'Gallery permission is required.');
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: kind === 'avatar' ? [1, 1] : [16, 6],
+      quality: 0.72,
+      base64: true
+    });
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    const uri = asset.base64 ? `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}` : asset.uri;
+    if (kind === 'avatar') setAvatarUrl(uri);
+    else setBannerUrl(uri);
+  }
 
   async function save() {
     setBusy(true);
-    await api.updateProfile({ displayName, bio, pronouns, customStatus, profileColor })
+    await api.updateProfile({ displayName, bio, pronouns, customStatus, profileColor, presence, avatarUrl, bannerUrl })
       .then(onSaved)
       .catch(error => notify('error', error.message))
       .finally(() => setBusy(false));
@@ -488,6 +567,12 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
           <Field icon="document-text" placeholder="Bio" value={bio} onChangeText={setBio} multiline />
           <Field icon="sparkles" placeholder="Pronouns" value={pronouns} onChangeText={setPronouns} />
           <Field icon="radio" placeholder="Custom status" value={customStatus} onChangeText={setCustomStatus} />
+          <Text style={styles.label}>Presence</Text>
+          <View style={styles.segment}>{(['online', 'dnd', 'idle', 'invisible'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, presence === item && styles.segmentActive]} onPress={() => setPresence(item)}><Ionicons name={presenceMeta[item].icon} size={13} color={presenceMeta[item].color} /><Text style={styles.segmentText}>{presenceMeta[item].label}</Text></Pressable>)}</View>
+          <View style={styles.mediaActions}>
+            <SecondaryButton label="Avatar" icon="camera" onPress={() => pickImage('avatar')} />
+            <SecondaryButton label="Banner" icon="image" onPress={() => pickImage('banner')} />
+          </View>
           <View style={styles.colorRow}>{['#58764A', '#7B6F45', '#8C5E3C', '#4B6D78'].map(color => <Pressable key={color} style={[styles.colorDot, { backgroundColor: color }, profileColor === color && styles.colorDotActive]} onPress={() => setProfileColor(color)} />)}</View>
           <View style={styles.modalActions}>
             <SecondaryButton label="Cancel" icon="close" onPress={onClose} />
@@ -500,6 +585,7 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
 }
 
 function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab: (tab: AppTab) => void; setUser: (user: User | null) => void; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
+  const [panel, setPanel] = useState<'account' | 'privacy' | 'devices' | 'appearance' | 'voice' | null>(null);
   async function logout() {
     await api.logout().catch(() => undefined);
     await clearTokens();
@@ -509,8 +595,12 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <Text style={styles.heroSmall}>Settings</Text>
-      <FeatureCard title="Account" body="Profile, password recovery, and device sessions." icon="person" />
-      <FeatureCard title="Privacy" body="DM privacy, blocked users, read receipts, and moderation reports." icon="shield" />
+      <SettingsRow icon="person" title="Account" body="Profile and password recovery" onPress={() => setPanel('account')} />
+      <SettingsRow icon="shield" title="Privacy" body="DM privacy, blocks, reports" onPress={() => setPanel('privacy')} />
+      <SettingsRow icon="phone-portrait" title="Logged In Devices" body="Current mobile session and future device controls" onPress={() => setPanel('devices')} />
+      <SettingsRow icon="color-palette" title="Appearance" body="Terria theme, density, and display" onPress={() => setPanel('appearance')} />
+      <SettingsRow icon="videocam" title="Voice & Video" body="Call readiness and media permissions" onPress={() => setPanel('voice')} />
+      {panel && <GlassCard><Text style={styles.cardTitle}>{settingsPanelTitle(panel)}</Text><Text style={styles.muted}>{settingsPanelBody(panel)}</Text>{panel === 'account' && <PrimaryButton label="Send Password Recovery" icon="mail" onPress={() => api.forgotPassword(user.email).then(() => notify('success', 'Recovery request accepted.')).catch(error => notify('error', error.message))} />}</GlassCard>}
       {user.role === 'admin' && <PrimaryButton label="Admin Dashboard" icon="shield-checkmark" onPress={() => setTab('admin')} />}
       {(user.role === 'staff' || user.role === 'admin') && <PrimaryButton label="Staff Dashboard" icon="briefcase" onPress={() => setTab('staff')} />}
       <Pressable style={styles.logout} onPress={logout}><Text style={styles.logoutText}>Log Out</Text></Pressable>
@@ -520,29 +610,53 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
 
 function AdminScreen({ setAnnouncement, setShowAnnouncement, notify }: { setAnnouncement: (a: Announcement | null) => void; setShowAnnouncement: (v: boolean) => void; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
   const [stats, setStats] = useState<DashboardStats>(emptyStats);
+  const [adminAnnouncements, setAdminAnnouncements] = useState<Announcement[]>([]);
+  const [adminBlogs, setAdminBlogs] = useState<BlogPost[]>([]);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [blogTitle, setBlogTitle] = useState('');
   const [blogBody, setBlogBody] = useState('');
+  const [imageUrl, setImageUrl] = useState('');
+  const [linkUrl, setLinkUrl] = useState('');
+  const [blogImageUrl, setBlogImageUrl] = useState('');
+  const [blogLinkUrl, setBlogLinkUrl] = useState('');
   const [badgeUser, setBadgeUser] = useState('');
   const [badge, setBadge] = useState('Founder');
   const [roleUser, setRoleUser] = useState('');
   const [role, setRole] = useState<User['role']>('staff');
 
-  const load = () => api.adminStats().then(setStats).catch(error => notify('error', error.message));
+  const load = () => Promise.all([api.adminStats(), api.adminAnnouncements(), api.blogs()])
+    .then(([nextStats, nextAnnouncements, nextBlogs]) => {
+      setStats(nextStats);
+      setAdminAnnouncements(nextAnnouncements);
+      setAdminBlogs(nextBlogs);
+    })
+    .catch(error => notify('error', error.message));
   useEffect(() => { load(); }, []);
 
   async function broadcast() {
     if (!title.trim() || !body.trim()) return notify('error', 'Add a title and message.');
-    await api.createAnnouncement({ title, body, isPopup: true, pinToHome: true })
-      .then(a => { setAnnouncement(a); setShowAnnouncement(true); setTitle(''); setBody(''); notify('success', 'Announcement published.'); load(); })
+    await api.createAnnouncement({ title, body, isPopup: true, pinToHome: true, imageUrl, linkUrl, linkLabel: 'Open link' })
+      .then(a => { setAnnouncement(a); setShowAnnouncement(true); setTitle(''); setBody(''); setImageUrl(''); setLinkUrl(''); notify('success', 'Announcement published.'); load(); })
       .catch(error => notify('error', error.message));
   }
 
   async function createBlog() {
     if (!blogTitle.trim() || !blogBody.trim()) return notify('error', 'Add a blog title and body.');
-    await api.createBlog({ title: blogTitle, body: blogBody, category: 'Update', pinned: true })
-      .then(() => { setBlogTitle(''); setBlogBody(''); notify('success', 'Blog post published.'); load(); })
+    await api.createBlog({ title: blogTitle, body: blogBody, category: 'Update', pinned: true, imageUrl: blogImageUrl, linkUrl: blogLinkUrl, linkLabel: 'Read more' })
+      .then(() => { setBlogTitle(''); setBlogBody(''); setBlogImageUrl(''); setBlogLinkUrl(''); notify('success', 'Blog post published.'); load(); })
+      .catch(error => notify('error', error.message));
+  }
+
+  async function removeAnnouncement(id: string) {
+    await api.deleteAnnouncement(id)
+      .then(() => { notify('success', 'Announcement deleted.'); load(); })
+      .catch(error => notify('error', error.message));
+  }
+
+  async function removeBlog(id: string) {
+    await api.deleteBlog(id)
+      .then(() => { notify('success', 'Blog post deleted.'); load(); })
       .catch(error => notify('error', error.message));
   }
 
@@ -550,8 +664,10 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, notify }: { setAnno
     <ScrollView contentContainerStyle={styles.scroll}>
       <Text style={styles.heroSmall}>Admin Dashboard</Text>
       <StatsGrid values={[['Users', String(stats.users)], ['Reports', String(stats.reports)], ['Groups', String(stats.activeGroups)], ['Health', `${stats.systemHealth}%`]]} />
-      <GlassCard><Text style={styles.cardTitle}>Announcement</Text><Field icon="megaphone" placeholder="Title" value={title} onChangeText={setTitle} /><Field icon="document-text" placeholder="Message" value={body} onChangeText={setBody} multiline /><PrimaryButton label="Publish Announcement" icon="send" onPress={broadcast} /></GlassCard>
-      <GlassCard><Text style={styles.cardTitle}>Blog Post</Text><Field icon="newspaper" placeholder="Title" value={blogTitle} onChangeText={setBlogTitle} /><Field icon="document-text" placeholder="Body" value={blogBody} onChangeText={setBlogBody} multiline /><PrimaryButton label="Publish Blog" icon="cloud-upload" onPress={createBlog} /></GlassCard>
+      <GlassCard><Text style={styles.cardTitle}>Announcement</Text><Field icon="megaphone" placeholder="Title" value={title} onChangeText={setTitle} /><Field icon="document-text" placeholder="Message with links" value={body} onChangeText={setBody} multiline /><Field icon="image" placeholder="Image URL" value={imageUrl} onChangeText={setImageUrl} autoCapitalize="none" /><Field icon="link" placeholder="Clickable link URL" value={linkUrl} onChangeText={setLinkUrl} autoCapitalize="none" /><PrimaryButton label="Publish Announcement" icon="send" onPress={broadcast} /></GlassCard>
+      <GlassCard><Text style={styles.cardTitle}>Manage Announcements</Text><PrimaryButton label="Refresh" icon="refresh" onPress={load} /><Text style={styles.muted}>Announcements remain visible until deleted manually from this dashboard.</Text>{adminAnnouncements.length === 0 ? <Text style={styles.muted}>No announcements published.</Text> : adminAnnouncements.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.title}</Text><Text style={styles.meta}>{new Date(item.createdAt).toLocaleDateString()}</Text></View><IconButton icon="trash" onPress={() => removeAnnouncement(item.id)} /></View>)}</GlassCard>
+      <GlassCard><Text style={styles.cardTitle}>Blog Post</Text><Field icon="newspaper" placeholder="Title" value={blogTitle} onChangeText={setBlogTitle} /><Field icon="document-text" placeholder="Body with links" value={blogBody} onChangeText={setBlogBody} multiline /><Field icon="image" placeholder="Image URL" value={blogImageUrl} onChangeText={setBlogImageUrl} autoCapitalize="none" /><Field icon="link" placeholder="Clickable link URL" value={blogLinkUrl} onChangeText={setBlogLinkUrl} autoCapitalize="none" /><PrimaryButton label="Publish Blog" icon="cloud-upload" onPress={createBlog} /></GlassCard>
+      <GlassCard><Text style={styles.cardTitle}>Manage Blog Posts</Text>{adminBlogs.length === 0 ? <Text style={styles.muted}>No blog posts published.</Text> : adminBlogs.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.title}</Text><Text style={styles.meta}>{item.category || 'Update'}</Text></View><IconButton icon="trash" onPress={() => removeBlog(item.id)} /></View>)}</GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Badges</Text><Field icon="at" placeholder="Username" value={badgeUser} onChangeText={setBadgeUser} autoCapitalize="none" /><Field icon="ribbon" placeholder="Badge" value={badge} onChangeText={setBadge} /><PrimaryButton label="Grant Badge" icon="ribbon" onPress={() => api.grantBadge({ username: badgeUser, badge }).then(() => notify('success', 'Badge granted.')).catch(error => notify('error', error.message))} /></GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Roles</Text><Field icon="at" placeholder="Username" value={roleUser} onChangeText={setRoleUser} autoCapitalize="none" /><View style={styles.segment}>{(['user', 'staff', 'admin'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, role === item && styles.segmentActive]} onPress={() => setRole(item)}><Text style={styles.segmentText}>{item}</Text></Pressable>)}</View><PrimaryButton label="Update Role" icon="key" onPress={() => api.setRole({ username: roleUser, role }).then(() => notify('success', 'Role updated.')).catch(error => notify('error', error.message))} /></GlassCard>
     </ScrollView>
@@ -616,10 +732,58 @@ function AnnouncementCard({ item }: { item: Announcement }) {
       <View style={styles.announcementIcon}><Ionicons name={item.isPopup ? 'megaphone' : 'newspaper'} size={20} color="#E6C07A" /></View>
       <View style={styles.flex}>
         <View style={styles.postTop}><Text style={styles.cardTitle}>{item.title}</Text><Text style={styles.meta}>{new Date(item.createdAt).toLocaleDateString()}</Text></View>
-        <Text style={styles.body}>{item.body}</Text>
+        {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.postImage} resizeMode="cover" /> : null}
+        <RichText text={item.body} />
+        {item.linkUrl ? <Pressable onPress={() => openLink(item.linkUrl)}><Text style={styles.link}>{item.linkLabel || item.linkUrl}</Text></Pressable> : null}
       </View>
     </GlassCard>
   );
+}
+
+function SettingsRow({ icon, title, body, onPress }: { icon: keyof typeof Ionicons.glyphMap; title: string; body: string; onPress: () => void }) {
+  return <Pressable onPress={onPress}><GlassCard style={styles.featureCard}><Ionicons name={icon} size={22} color="#E6C07A" /><View style={styles.flex}><Text style={styles.cardTitle}>{title}</Text><Text style={styles.muted}>{body}</Text></View><Ionicons name="chevron-forward" size={18} color="#9AA391" /></GlassCard></Pressable>;
+}
+
+function settingsPanelTitle(panel: 'account' | 'privacy' | 'devices' | 'appearance' | 'voice') {
+  return ({ account: 'Account', privacy: 'Privacy', devices: 'Logged In Devices', appearance: 'Appearance', voice: 'Voice & Video' })[panel];
+}
+
+function settingsPanelBody(panel: 'account' | 'privacy' | 'devices' | 'appearance' | 'voice') {
+  return ({
+    account: 'Manage profile details and send a recovery request for your account.',
+    privacy: 'DM privacy, block controls, and report management are active. More granular toggles can be added without changing account data.',
+    devices: 'Current device is signed in. Full device history will appear here once persistent sessions are enabled.',
+    appearance: 'Terria is the active theme. The layout is tuned for mobile readability and raised system navigation.',
+    voice: 'Call and video controls are visible in DMs. LiveKit credentials are required before calls can connect.'
+  })[panel];
+}
+
+function StatusPill({ presence }: { presence: User['presence'] }) {
+  const meta = presenceMeta[presence];
+  return <View style={styles.rolePill}><Ionicons name={meta.icon} size={11} color={meta.color} /><Text style={styles.roleText}>{meta.label}</Text></View>;
+}
+
+function BadgeChip({ badge }: { badge: string }) {
+  return <Pressable onPress={() => Alert.alert(badge, `${badge} badge`)} style={styles.badgeChip}><Ionicons name={badgeIcons[badge] || 'ribbon'} size={12} color="#E6C07A" /><Text style={styles.badgeChipText}>{badge}</Text></Pressable>;
+}
+
+function BadgeIcon({ badge }: { badge: string }) {
+  return <Pressable onPress={() => Alert.alert(badge, `${badge} badge`)} style={styles.badgeIcon}><Ionicons name={badgeIcons[badge] || 'ribbon'} size={11} color="#E6C07A" /></Pressable>;
+}
+
+function normalizeBadges(badges: string[]) {
+  return badges.length ? badges : ['Member'];
+}
+
+function openLink(url?: string) {
+  if (!url) return;
+  const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+  Linking.openURL(normalized).catch(() => undefined);
+}
+
+function RichText({ text }: { text: string }) {
+  const parts = text.split(/(https?:\/\/[^\s]+|www\.[^\s]+)/g);
+  return <Text style={styles.body}>{parts.map((part, index) => /^(https?:\/\/|www\.)/i.test(part) ? <Text key={`${part}-${index}`} style={styles.inlineLink} onPress={() => openLink(part)}>{part}</Text> : <Text key={`${part}-${index}`}>{part}</Text>)}</Text>;
 }
 
 function NoticeFooter({ notice, bottom }: { notice: Notice; bottom: number }) {
@@ -691,6 +855,7 @@ const styles = StyleSheet.create({
   terraBandBottom: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 180, backgroundColor: 'rgba(94,61,38,.22)' },
   splash: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 26 },
   splashLogo: { width: 170, height: 170 },
+  splashWordmark: { width: '88%', maxWidth: 360, height: 128 },
   brandTitle: { color: '#F4F0E6', fontSize: 28, fontWeight: '800', marginTop: 8, letterSpacing: -0.5 },
   brandSub: { color: '#E6C07A', fontSize: 11, letterSpacing: 3, marginTop: 4, fontWeight: '700' },
   loadingBar: { width: '72%', height: 3, backgroundColor: '#20291E', marginTop: 54, borderRadius: 2 },
@@ -700,6 +865,7 @@ const styles = StyleSheet.create({
   authPanel: { borderRadius: 10, borderWidth: 1, borderColor: 'rgba(230,192,122,.25)', backgroundColor: 'rgba(20,28,21,.92)', padding: 22, alignItems: 'center', gap: 14 },
   authCard: { alignItems: 'center', gap: 12 },
   authLogo: { width: 104, height: 104 },
+  authWordmark: { width: '92%', maxWidth: 300, height: 92 },
   authText: { color: '#C9D1BE', textAlign: 'center', marginBottom: 8, lineHeight: 22, fontSize: 15 },
   header: { height: 62, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(230,192,122,.08)' },
   headerBrand: { flexDirection: 'row', alignItems: 'center', gap: 10 },
@@ -715,19 +881,23 @@ const styles = StyleSheet.create({
   hero: { color: '#F4F0E6', fontWeight: '900', fontSize: 32, lineHeight: 38, letterSpacing: -0.5, marginBottom: 6 },
   heroSmall: { color: '#F4F0E6', fontWeight: '900', fontSize: 24, lineHeight: 30, letterSpacing: -0.3 },
   heroSub: { color: '#C9D1BE', fontSize: 16, lineHeight: 24, marginBottom: 16 },
-  rolePill: { borderRadius: 8, borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', paddingHorizontal: 12, paddingVertical: 7, backgroundColor: 'rgba(50,60,39,.72)' },
+  rolePill: { borderRadius: 8, borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', paddingHorizontal: 12, paddingVertical: 7, backgroundColor: 'rgba(50,60,39,.72)', flexDirection: 'row', alignItems: 'center', gap: 6 },
+  rolePillInline: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   roleText: { color: '#E6C07A', textTransform: 'uppercase', fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
   glassCard: { borderRadius: 14, borderWidth: 1, borderColor: 'rgba(218,226,202,.14)', backgroundColor: 'rgba(22,30,23,.86)', padding: 18, overflow: 'hidden', gap: 4 },
   postCard: { gap: 10 },
+  postImage: { width: '100%', height: 150, borderRadius: 10, backgroundColor: '#111712', marginTop: 8 },
   postTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   announcementCard: { flexDirection: 'row', gap: 14, alignItems: 'flex-start', borderColor: 'rgba(230,192,122,.2)', borderWidth: 1.5 },
   announcementIcon: { width: 42, height: 42, borderRadius: 8, backgroundColor: 'rgba(230,192,122,.14)', alignItems: 'center', justifyContent: 'center' },
+  manageRow: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 12, borderTopWidth: 1, borderTopColor: 'rgba(218,226,202,.09)', paddingTop: 12, marginTop: 12 },
   cardTitle: { color: '#F4F0E6', fontWeight: '800', fontSize: 17, letterSpacing: 0.2 },
   muted: { color: '#AEB8A5', lineHeight: 22, fontSize: 14 },
   body: { color: '#E7EBDD', lineHeight: 22, fontSize: 15, fontWeight: '500' },
   meta: { color: '#899486', fontSize: 12, marginTop: 6, fontWeight: '600' },
   errorText: { color: '#FFAAA8', lineHeight: 20 },
   link: { color: '#E6C07A', fontWeight: '800', fontSize: 14 },
+  inlineLink: { color: '#E6C07A', fontWeight: '800' },
   formMessage: { color: '#FFAAA8', textAlign: 'center', fontSize: 13, marginTop: 8, fontWeight: '600' },
   successMessage: { color: '#98D6A1', textAlign: 'center', fontSize: 13, marginTop: 8, fontWeight: '600' },
   
@@ -787,6 +957,8 @@ const styles = StyleSheet.create({
   badgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
   badgeRowMini: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
   badgeChip: { color: '#F4F0E6', backgroundColor: 'rgba(230,192,122,.14)', borderColor: 'rgba(230,192,122,.28)', borderWidth: 1, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, fontSize: 12, fontWeight: '800' },
+  badgeChipText: { color: '#F4F0E6', fontSize: 12, fontWeight: '800' },
+  badgeIcon: { width: 18, height: 18, borderRadius: 6, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(230,192,122,.14)' },
   badgeMini: { color: '#E6C07A', fontSize: 11, fontWeight: '800' },
   
   // Empty & Error States
@@ -801,20 +973,25 @@ const styles = StyleSheet.create({
   friendOptionText: { color: '#E7EBDD', fontSize: 15, fontWeight: '500', flex: 1 },
   
   // Chat & Messages
-  chatLayout: { flex: 1, flexDirection: 'row', paddingHorizontal: 10, paddingBottom: 118, gap: 10 },
+  chatLayout: { flex: 1, paddingHorizontal: 10, paddingBottom: 118, gap: 10 },
+  dmListFull: { padding: 6, gap: 10 },
+  dmCard: { minHeight: 66, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(218,226,202,.13)', backgroundColor: 'rgba(22,30,23,.82)', padding: 12, flexDirection: 'row', alignItems: 'center', gap: 12 },
   dmRail: { width: 122, borderRightWidth: 1, borderColor: 'rgba(218,226,202,.1)', paddingTop: 8, gap: 8 },
   dmItem: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10, borderRadius: 10 },
   dmItemActive: { backgroundColor: 'rgba(230,192,122,.14)' },
   dmTitle: { color: '#F4F0E6', fontWeight: '800', fontSize: 14 },
   emptyRail: { color: '#899486', fontSize: 12 },
   thread: { flex: 1 },
-  threadHeader: { minHeight: 56, justifyContent: 'center', borderBottomWidth: 1, borderColor: 'rgba(218,226,202,.1)' },
+  threadHeader: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: 1, borderColor: 'rgba(218,226,202,.1)' },
+  threadHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   
   messagesContainer: { gap: 10, marginVertical: 14 },
   messageList: { paddingVertical: 12, gap: 10, paddingBottom: 16 },
   messageRow: { alignItems: 'flex-start' },
   messageOwn: { alignItems: 'flex-end' },
-  messageBubble: { maxWidth: '85%', borderRadius: 16, padding: 12, marginBottom: 10 },
+  messageBubble: { maxWidth: '92%', borderRadius: 12, padding: 12, marginBottom: 10, backgroundColor: 'rgba(30,42,33,.8)' },
+  messageAuthor: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 4 },
+  messageName: { color: '#E6C07A', fontSize: 12, fontWeight: '800' },
   messageBubbleOther: { backgroundColor: 'rgba(30,42,33,.8)' },
   messageBubbleOwn: { backgroundColor: '#4A5934', alignSelf: 'flex-end' },
   messageBody: { color: '#F2F8F5', fontSize: 15, lineHeight: 22, fontWeight: '500' },
@@ -825,6 +1002,7 @@ const styles = StyleSheet.create({
   messageDeleteText: { color: '#FFAAA8', fontWeight: '700', fontSize: 12 },
   
   gifImage: { width: 190, height: 130, borderRadius: 10, backgroundColor: '#111712' },
+  chatImage: { width: 214, height: 150, borderRadius: 10, backgroundColor: '#111712' },
   pickerRow: { flexDirection: 'row', gap: 6, paddingVertical: 8, flexWrap: 'wrap' },
   pickerButton: { width: 40, height: 40, borderRadius: 10, backgroundColor: '#202A21', alignItems: 'center', justifyContent: 'center' },
   emojiText: { fontSize: 22 },
@@ -841,12 +1019,15 @@ const styles = StyleSheet.create({
   // Profile
   profileHero: { alignItems: 'center', gap: 14, paddingTop: 8, paddingVertical: 20 },
   profileBanner: { height: 90, alignSelf: 'stretch', marginHorizontal: -18, marginTop: -18, marginBottom: -32 },
+  profileBannerImage: { height: 116, alignSelf: 'stretch', marginHorizontal: -18, marginTop: -18, marginBottom: -42, backgroundColor: '#111712' },
   profileAvatarLarge: { width: 96, height: 96, borderRadius: 24, backgroundColor: '#33412E', alignItems: 'center', justifyContent: 'center', borderWidth: 3, borderColor: '#7D8B58' },
   profileAvatarText: { color: '#F4F0E6', fontWeight: '900', fontSize: 36 },
   profileLogo: { width: 96, height: 96, borderRadius: 20, borderWidth: 3, borderColor: '#1B241C' },
+  statusDot: { position: 'absolute', width: 18, height: 18, borderRadius: 9, right: 1, bottom: 5, borderWidth: 3, borderColor: '#1B241C' },
   profileName: { color: '#F4F0E6', fontSize: 28, fontWeight: '900', letterSpacing: -0.3 },
   profileBadgeContainer: { flexDirection: 'row', gap: 10, marginTop: 8 },
   colorRow: { flexDirection: 'row', gap: 12, marginTop: 12 },
+  mediaActions: { flexDirection: 'row', gap: 8, marginTop: 8 },
   colorDot: { width: 36, height: 36, borderRadius: 18, borderWidth: 2, borderColor: 'transparent' },
   colorDotActive: { borderColor: '#F4F0E6' },
   

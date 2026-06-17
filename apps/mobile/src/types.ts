@@ -72,6 +72,9 @@ export type Announcement = {
   id: string;
   title: string;
   body: string;
+  imageUrl?: string;
+  linkUrl?: string;
+  linkLabel?: string;
   createdAt: string;
   isPopup: boolean;
   pinToHome: boolean;
@@ -82,6 +85,9 @@ export type BlogPost = {
   id: string;
   title: string;
   body: string;
+  imageUrl?: string;
+  linkUrl?: string;
+  linkLabel?: string;
   category: string;
   authorName: string;
   createdAt: string;

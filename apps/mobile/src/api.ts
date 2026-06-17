@@ -88,7 +88,7 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   me: () => request<User>('/me'),
-  updateProfile: (payload: Partial<Pick<User, 'displayName' | 'bio' | 'pronouns' | 'customStatus' | 'profileColor'>>) =>
+  updateProfile: (payload: Partial<Pick<User, 'displayName' | 'bio' | 'pronouns' | 'customStatus' | 'profileColor' | 'avatarUrl' | 'bannerUrl' | 'presence'>>) =>
     request<User>('/me/profile', { method: 'PATCH', body: JSON.stringify(payload) }),
   logout: () => request('/auth/logout', { method: 'POST' }),
   forgotPassword: (email: string) => request('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
@@ -117,10 +117,12 @@ export const api = {
   }),
   adminStats: () => request<DashboardStats>('/admin/stats'),
   adminAnnouncements: () => request<Announcement[]>('/admin/announcements'),
-  createAnnouncement: (payload: { title: string; body: string; isPopup: boolean; pinToHome: boolean }) =>
+  createAnnouncement: (payload: { title: string; body: string; isPopup: boolean; pinToHome: boolean; imageUrl?: string; linkUrl?: string; linkLabel?: string }) =>
     request<Announcement>('/admin/announcements', { method: 'POST', body: JSON.stringify(payload) }),
-  createBlog: (payload: { title: string; body: string; category: string; pinned: boolean }) =>
+  deleteAnnouncement: (id: string) => request(`/admin/announcements/${id}`, { method: 'DELETE' }),
+  createBlog: (payload: { title: string; body: string; category: string; pinned: boolean; imageUrl?: string; linkUrl?: string; linkLabel?: string }) =>
     request<BlogPost>('/admin/blogs', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteBlog: (id: string) => request(`/admin/blogs/${id}`, { method: 'DELETE' }),
   grantBadge: (payload: { username: string; badge: string }) =>
     request<User>('/admin/badges/grant', { method: 'POST', body: JSON.stringify(payload) }),
   setRole: (payload: { username: string; role: User['role'] }) =>
