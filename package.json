@@ -1,6 +1,6 @@
 {
   "name": "zevryl",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "workspaces": [
     "apps/mobile",
@@ -12,6 +12,10 @@
     "build": "npm run typecheck",
     "typecheck": "npm --workspaces --if-present run typecheck",
     "lint": "npm --workspaces --if-present run lint"
+  },
+  "dependencies": {
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
   },
   "overrides": {
     "postcss": "^8.5.10",

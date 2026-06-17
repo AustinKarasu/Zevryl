@@ -1,6 +1,6 @@
 {
   "name": "@zevryl/mobile",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "main": "index.ts",
   "scripts": {
@@ -8,14 +8,13 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prebuild:android": "expo prebuild --platform android --clean --non-interactive",
+    "patch:android-gradle": "node scripts/patch-android-gradle.cjs",
+    "build:android:release": "npm run prebuild:android && npm run patch:android-gradle && cd android && gradlew.bat assembleRelease"
   },
   "dependencies": {
-    "@config-plugins/react-native-webrtc": "13.0.0",
     "@expo/vector-icons": "15.1.1",
-    "@livekit/react-native": "2.11.0",
-    "@livekit/react-native-expo-plugin": "1.0.2",
-    "@livekit/react-native-webrtc": "144.1.0",
     "expo": "54.0.35",
     "expo-blur": "15.0.8",
     "expo-constants": "18.0.13",
@@ -24,8 +23,6 @@
     "expo-linear-gradient": "15.0.8",
     "expo-secure-store": "15.0.8",
     "expo-status-bar": "3.0.9",
-    "expo-updates": "~29.0.18",
-    "livekit-client": "2.19.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",

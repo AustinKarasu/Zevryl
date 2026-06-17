@@ -1,9 +1,7 @@
 name: Mobile APK Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 jobs:
   build-android:

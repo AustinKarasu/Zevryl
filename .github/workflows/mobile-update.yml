@@ -1,9 +1,7 @@
 name: Mobile OTA Update
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
   publish-update:
