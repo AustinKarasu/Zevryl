@@ -2,7 +2,7 @@ const app = {
   expo: {
     name: 'Zevryl',
     slug: 'zevryl',
-    version: '0.1.14',
+    version: '0.1.15',
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'dark',
@@ -24,7 +24,7 @@ const app = {
     },
     android: {
       package: 'com.zevryl.mobile',
-      versionCode: 14,
+      versionCode: 15,
       usesCleartextTraffic: true,
       permissions: ['INTERNET', 'CAMERA', 'RECORD_AUDIO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VIDEO']
     },

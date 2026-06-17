@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
-import type { Announcement, BlogPost, Conversation, DashboardStats, FriendState, Group, Message, Report, User } from './types';
+import type { Announcement, BlogPost, Conversation, DashboardStats, FriendState, Group, Message, Report, Ticket, User } from './types';
 
 const configuredUrl = normalizeApiUrl(
   process.env.EXPO_PUBLIC_API_URL ||
@@ -77,10 +77,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const api = {
   url: configuredUrl ?? 'Not configured',
-  login: (emailOrUsername: string, password: string) =>
+  login: (emailOrUsername: string, password: string, twoFactorCode?: string) =>
     request<{ user: User; accessToken: string; refreshToken: string }>('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ emailOrUsername, password })
+      body: JSON.stringify({ emailOrUsername, password, twoFactorCode })
     }),
   register: (payload: { fullName: string; email: string; username: string; password: string }) =>
     request<{ user: User; accessToken: string; refreshToken: string }>('/auth/register', {
@@ -88,8 +88,13 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   me: () => request<User>('/me'),
-  updateProfile: (payload: Partial<Pick<User, 'displayName' | 'bio' | 'pronouns' | 'customStatus' | 'profileColor' | 'avatarUrl' | 'bannerUrl' | 'presence'>>) =>
+  updateProfile: (payload: Partial<Pick<User, 'displayName' | 'bio' | 'pronouns' | 'customStatus' | 'profileColor' | 'profileTheme' | 'avatarUrl' | 'bannerUrl' | 'presence'>>) =>
     request<User>('/me/profile', { method: 'PATCH', body: JSON.stringify(payload) }),
+  updatePrivacy: (payload: { dmPolicy: 'everyone' | 'friends' | 'none'; profileLinks: boolean }) =>
+    request<User>('/me/privacy', { method: 'PATCH', body: JSON.stringify(payload) }),
+  setup2fa: () => request<{ secret: string; otpauthUrl: string; qrUrl: string }>('/me/2fa/setup', { method: 'POST' }),
+  verify2fa: (code: string) => request<User>('/me/2fa/verify', { method: 'POST', body: JSON.stringify({ code }) }),
+  disable2fa: (code: string) => request<User>('/me/2fa/disable', { method: 'POST', body: JSON.stringify({ code }) }),
   logout: () => request('/auth/logout', { method: 'POST' }),
   forgotPassword: (email: string) => request('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
   friends: () => request<FriendState>('/friends'),
@@ -106,11 +111,23 @@ export const api = {
   blogs: () => request<BlogPost[]>('/blogs'),
   conversations: () => request<Conversation[]>('/conversations'),
   createDm: (userId: string) => request<Conversation>('/conversations/dm', { method: 'POST', body: JSON.stringify({ userId }) }),
-  messages: (conversationId: string) => request<Message[]>(`/messages/${conversationId}`),
+  messages: (conversationId: string, query?: { q?: string; pinned?: boolean }) => {
+    const params = new URLSearchParams();
+    if (query?.q) params.set('q', query.q);
+    if (query?.pinned) params.set('pinned', '1');
+    const suffix = params.toString() ? `?${params}` : '';
+    return request<Message[]>(`/messages/${conversationId}${suffix}`);
+  },
   sendMessage: (payload: { conversationId: string; body: string; type?: Message['type']; attachmentUrl?: string }) =>
     request<Message>('/messages', { method: 'POST', body: JSON.stringify(payload) }),
   editMessage: (id: string, body: string) => request<Message>(`/messages/${id}`, { method: 'PATCH', body: JSON.stringify({ body }) }),
+  pinMessage: (id: string) => request<Message>(`/messages/${id}/pin`, { method: 'POST' }),
   deleteMessage: (id: string) => request(`/messages/${id}`, { method: 'DELETE' }),
+  conversationAction: (id: string, action: 'mute' | 'block' | 'unfriend', payload: { hours?: number } = {}) =>
+    request(`/conversations/${id}/${action}`, { method: 'POST', body: JSON.stringify(payload) }),
+  tickets: () => request<Ticket[]>('/tickets'),
+  createTicket: (payload: { type: Ticket['type']; subject: string; body: string; proofUrl?: string; targetUserId?: string }) =>
+    request<Ticket>('/tickets', { method: 'POST', body: JSON.stringify(payload) }),
   callToken: (roomName: string) => request<{ url: string; token: string; roomName: string }>('/calls/token', {
     method: 'POST',
     body: JSON.stringify({ roomName, canPublish: true, canSubscribe: true })
@@ -127,5 +144,5 @@ export const api = {
     request<User>('/admin/badges/grant', { method: 'POST', body: JSON.stringify(payload) }),
   setRole: (payload: { username: string; role: User['role'] }) =>
     request<User>('/admin/users/role', { method: 'POST', body: JSON.stringify(payload) }),
-  reports: () => request<Report[]>('/staff/reports')
+  reports: () => request<{ reports: Report[]; tickets: Ticket[] }>('/staff/reports')
 };

@@ -31,6 +31,7 @@ import type {
   Group,
   Message,
   Report,
+  Ticket,
   User
 } from './types';
 
@@ -60,6 +61,13 @@ const presenceMeta: Record<User['presence'], { label: string; icon: keyof typeof
   idle: { label: 'Idle', icon: 'moon', color: '#D9A441' },
   invisible: { label: 'Invisible', icon: 'ellipse-outline', color: '#8D9688' },
   offline: { label: 'Offline', icon: 'ellipse-outline', color: '#8D9688' }
+};
+const badgePriority = ['Founder', 'Admin', 'Mod', 'Staff', 'Vip', 'Partner', 'Demo', 'Member'];
+const profileThemes: Record<NonNullable<User['profileTheme']>, { label: string; color: string; colors: [string, string, string] }> = {
+  terria: { label: 'Terria', color: '#7D8B58', colors: ['#111712', '#19221A', '#2A2118'] },
+  ember: { label: 'Ember', color: '#B86B4A', colors: ['#171111', '#261917', '#342018'] },
+  ocean: { label: 'Ocean', color: '#4B7C8C', colors: ['#101518', '#15232A', '#172D34'] },
+  mono: { label: 'Mono', color: '#AEB8A5', colors: ['#111111', '#1C1C1C', '#282828'] }
 };
 const gifs = [
   'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExb2d4MzgzdTBqOWc3eGxxZGNzYnRydjF0dDhtczlmbzhmOWUwajU2MiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/111ebonMs90YLu/giphy.gif',
@@ -160,6 +168,7 @@ function renderTab(
   if (tab === 'chats') return <ChatScreen user={user} notify={tools.notify} />;
   if (tab === 'profile') return <ProfileScreen user={user} setUser={tools.setUser} notify={tools.notify} />;
   if (tab === 'settings') return <SettingsScreen user={user} setTab={tools.setTab} setUser={tools.setUser} notify={tools.notify} />;
+  if (tab === 'tickets') return <TicketScreen user={user} notify={tools.notify} />;
   if (tab === 'admin') return <AdminScreen setAnnouncement={tools.setAnnouncement} setShowAnnouncement={tools.setShowAnnouncement} notify={tools.notify} />;
   if (tab === 'staff') return <StaffScreen notify={tools.notify} />;
   return null;
@@ -203,6 +212,8 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [needs2fa, setNeeds2fa] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function submit() {
@@ -212,12 +223,14 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
     setBusy(true);
     try {
       const result = mode === 'login'
-        ? await api.login(email, password)
+        ? await api.login(email, password, twoFactorCode || undefined)
         : await api.register({ fullName, email, username, password });
       await onDone(result.user, result.accessToken, result.refreshToken);
       notify('success', 'Signed in.');
     } catch (error) {
-      notify('error', error instanceof Error ? error.message : 'Could not sign in.');
+      const message = error instanceof Error ? error.message : 'Could not sign in.';
+      if (/2FA|authenticator/i.test(message)) setNeeds2fa(true);
+      notify('error', message);
     } finally {
       setBusy(false);
     }
@@ -240,6 +253,7 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
           <Field icon="mail" placeholder="Email or username" value={email} onChangeText={setEmail} autoCapitalize="none" />
           {mode === 'register' && <Field icon="at" placeholder="Username" value={username} onChangeText={setUsername} autoCapitalize="none" />}
           <Field icon="lock-closed" placeholder="Password" value={password} onChangeText={setPassword} secureTextEntry />
+          {mode === 'login' && needs2fa && <Field icon="keypad" placeholder="Authenticator code" value={twoFactorCode} onChangeText={setTwoFactorCode} keyboardType="number-pad" />}
           {mode === 'register' && <Field icon="shield-checkmark" placeholder="Confirm password" value={confirm} onChangeText={setConfirm} secureTextEntry />}
           {mode === 'login' && <Pressable onPress={forgotPassword}><Text style={styles.link}>Forgot password?</Text></Pressable>}
           <PrimaryButton label={mode === 'login' ? 'Login' : 'Create Account'} icon={mode === 'login' ? 'arrow-forward' : 'person-add'} busy={busy} onPress={submit} />
@@ -333,8 +347,8 @@ function FriendsScreen({ notify, setTab }: { notify: (tone: 'error' | 'success' 
       <SectionTitle title="Friends" action="Refresh" onPress={load} />
       <GlassCard>
         <Text style={styles.cardTitle}>Add Friend</Text>
-        <Field icon="person-add" placeholder="Username" value={username} onChangeText={setUsername} autoCapitalize="none" />
-        <PrimaryButton label="Send Request" icon="send" onPress={() => username ? action(api.requestFriend(username), 'Friend request sent.') : notify('error', 'Enter a username first.')} />
+        <Field icon="person-add" placeholder="username#12345" value={username} onChangeText={setUsername} autoCapitalize="none" />
+        <PrimaryButton label="Send Request" icon="send" onPress={() => username ? action(api.requestFriend(username), 'Friend request sent.') : notify('error', 'Enter a username tag first.')} />
       </GlassCard>
       {state.loading ? <LoadingState /> : state.error ? <ErrorState message={state.error} onRetry={load} /> : null}
       <UserList title="Direct Messages" users={state.data.friends} empty="Add a friend to start a DM." right={(friend) => (
@@ -398,6 +412,11 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
   const [body, setBody] = useState('');
   const [showEmoji, setShowEmoji] = useState(false);
   const [showGif, setShowGif] = useState(false);
+  const [search, setSearch] = useState('');
+  const [pinnedOnly, setPinnedOnly] = useState(false);
+  const [profileUser, setProfileUser] = useState<User | null>(null);
+  const [reportReason, setReportReason] = useState('');
+  const [reportProof, setReportProof] = useState('');
 
   const loadConversations = () => api.conversations()
     .then(data => {
@@ -409,8 +428,10 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
 
   useEffect(() => {
     if (!selected) return;
-    api.messages(selected.id).then(setMessages).catch(error => notify('error', error.message));
-  }, [selected?.id]);
+    api.messages(selected.id, { q: search, pinned: pinnedOnly }).then(setMessages).catch(error => notify('error', error.message));
+  }, [selected?.id, pinnedOnly]);
+
+  const refreshMessages = () => selected && api.messages(selected.id, { q: search, pinned: pinnedOnly }).then(setMessages).catch(error => notify('error', error.message));
 
   async function send(payload?: { type?: Message['type']; attachmentUrl?: string; body?: string }) {
     if (!selected) return notify('error', 'Open a DM first.');
@@ -445,6 +466,27 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
       .catch(error => notify('error', error.message));
   }
 
+  async function pin(message: Message) {
+    await api.pinMessage(message.id)
+      .then(next => setMessages(prev => prev.map(item => item.id === next.id ? next : item)))
+      .catch(error => notify('error', error.message));
+  }
+
+  async function dmAction(action: 'mute' | 'block' | 'unfriend', hours?: number) {
+    if (!selected) return;
+    await api.conversationAction(selected.id, action, { hours })
+      .then(() => { notify('success', action === 'mute' ? 'Conversation muted.' : action === 'block' ? 'User blocked.' : 'Friend removed.'); setProfileUser(null); loadConversations(); })
+      .catch(error => notify('error', error.message));
+  }
+
+  async function submitReport() {
+    if (!profileUser) return;
+    if (!reportReason.trim()) return notify('error', 'Add a report reason.');
+    await api.createTicket({ type: 'report', subject: `Report ${profileUser.tag || profileUser.username}`, body: reportReason, proofUrl: reportProof || undefined, targetUserId: profileUser.id })
+      .then(() => { notify('success', 'Report ticket created.'); setReportReason(''); setReportProof(''); setProfileUser(null); })
+      .catch(error => notify('error', error.message));
+  }
+
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
       <View style={styles.chatLayout}>
@@ -456,7 +498,7 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
                 <View style={styles.avatar}><Text style={styles.avatarText}>{item.title.slice(0, 1)}</Text></View>
                 <View style={styles.flex}>
                   <Text style={styles.dmTitle}>{item.title}</Text>
-                  <Text style={styles.meta} numberOfLines={1}>{item.lastMessage?.body || item.subtitle || 'No messages yet'}</Text>
+                  <Text style={styles.meta} numberOfLines={1}>{item.mutedUntil ? 'Muted · ' : ''}{item.lastMessage?.body || item.subtitle || 'No messages yet'}</Text>
                 </View>
                 <Ionicons name="chevron-forward" size={18} color="#9AA391" />
               </Pressable>
@@ -473,12 +515,18 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
             <IconButton icon="call" onPress={() => notify('info', 'Voice call setup is ready for LiveKit configuration.')} />
             <IconButton icon="videocam" onPress={() => notify('info', 'Video call setup is ready for LiveKit configuration.')} />
           </View>
+          <View style={styles.chatTools}>
+            <TextInput style={styles.searchInput} placeholder="Search messages" placeholderTextColor="#899486" value={search} onChangeText={setSearch} onSubmitEditing={refreshMessages} />
+            <IconButton icon="search" onPress={refreshMessages} />
+            <IconButton icon={pinnedOnly ? 'pin' : 'pin-outline'} onPress={() => setPinnedOnly(prev => !prev)} />
+          </View>
           <ScrollView contentContainerStyle={styles.messageList}>
             {messages.length === 0 ? <EmptyState title="No messages" body="Send the first message, emoji, sticker, GIF, or image." /> : messages.map(message => {
               const author = selected.participants.find(p => p.id === message.senderId) || user;
+              const topBadge = topPriorityBadge(author.badges);
               return (
-              <Pressable key={message.id} onLongPress={() => message.senderId === user.id && remove(message)} style={[styles.messageRow, message.senderId === user.id && styles.messageOwn]}>
-                <View style={styles.messageAuthor}><Text style={styles.messageName}>@{author.username}</Text>{normalizeBadges(author.badges).slice(0, 2).map(b => <BadgeIcon key={b} badge={b} />)}</View>
+              <Pressable key={message.id} onLongPress={() => Alert.alert('Message', 'Choose an action', [{ text: message.pinned ? 'Unpin' : 'Pin', onPress: () => pin(message) }, ...(message.senderId === user.id ? [{ text: 'Delete', style: 'destructive' as const, onPress: () => remove(message) }] : []), { text: 'Cancel', style: 'cancel' }])} style={[styles.messageRow, message.senderId === user.id && styles.messageOwn]}>
+                <Pressable style={styles.messageAuthor} onPress={() => setProfileUser(author)}><Text style={styles.messageName}>@{author.tag || author.username}</Text>{topBadge ? <BadgeIcon badge={topBadge} /> : null}{message.pinned ? <Ionicons name="pin" size={11} color="#E6C07A" /> : null}</Pressable>
                 <View style={[styles.messageBubble, message.senderId === user.id && styles.messageBubbleOwn]}>
                   {(message.type === 'gif' || message.type === 'image') && message.attachmentUrl ? <Image source={{ uri: message.attachmentUrl }} style={styles.chatImage} resizeMode="cover" /> : null}
                   {message.body ? <Text style={styles.body}>{message.body}</Text> : null}
@@ -491,12 +539,11 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
           {showGif && <View style={styles.gifPicker}>{gifs.map(item => <Pressable key={item} onPress={() => send({ type: 'gif', attachmentUrl: item, body: 'GIF' })}><Image source={{ uri: item }} style={styles.gifThumb} /></Pressable>)}</View>}
           <View style={styles.composer}>
             <IconButton icon="happy" onPress={() => { setShowEmoji(prev => !prev); setShowGif(false); }} />
-            <IconButton icon="images" onPress={() => { setShowGif(prev => !prev); setShowEmoji(false); }} />
-            <IconButton icon="image" onPress={() => pickChatImage(false)} />
-            <IconButton icon="camera" onPress={() => pickChatImage(true)} />
+            <IconButton icon="add-circle" onPress={() => Alert.alert('Attach', 'Choose what to send', [{ text: 'Photo Library', onPress: () => pickChatImage(false) }, { text: 'Camera', onPress: () => pickChatImage(true) }, { text: 'GIFs', onPress: () => { setShowGif(prev => !prev); setShowEmoji(false); } }, { text: 'Cancel', style: 'cancel' }])} />
             <TextInput style={styles.composerInput} placeholder="Message" placeholderTextColor="#899486" value={body} onChangeText={setBody} multiline />
             <IconButton icon="send" onPress={() => send()} />
           </View>
+          <ProfileSheet user={profileUser} currentUser={user} reportReason={reportReason} reportProof={reportProof} setReportReason={setReportReason} setReportProof={setReportProof} onClose={() => setProfileUser(null)} onMute={dmAction} onReport={submitReport} />
         </View>
         )}
       </View>
@@ -506,17 +553,18 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
 
 function ProfileScreen({ user, setUser, notify }: { user: User; setUser: (user: User) => void; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
   const [editing, setEditing] = useState(false);
+  const theme = profileThemes[user.profileTheme || 'terria'];
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
-      <GlassCard style={styles.profileHero}>
-        {user.bannerUrl ? <Image source={{ uri: user.bannerUrl }} style={styles.profileBannerImage} resizeMode="cover" /> : <View style={[styles.profileBanner, { backgroundColor: user.profileColor || '#58764A' }]} />}
+      <GlassCard style={[styles.profileHero, { borderColor: theme.color, backgroundColor: `${theme.color}22` }]}>
+        {user.bannerUrl ? <Image source={{ uri: user.bannerUrl }} style={styles.profileBannerImage} resizeMode="cover" /> : <View style={[styles.profileBanner, { backgroundColor: user.profileColor || theme.color }]} />}
         <View>
           <Image source={user.avatarUrl ? { uri: user.avatarUrl } : logo} style={styles.profileLogo} />
           <View style={[styles.statusDot, { backgroundColor: presenceMeta[user.presence].color }]} />
         </View>
         <Text style={styles.profileName}>{user.displayName}</Text>
-        <Text style={styles.muted}>@{user.username}</Text>
+        <Text style={styles.muted}>@{user.tag || user.username}</Text>
         <View style={styles.badgeRow}>{normalizeBadges(user.badges).map(badge => <BadgeChip key={badge} badge={badge} />)}</View>
         <PrimaryButton label="Edit Profile" icon="create" onPress={() => setEditing(true)} />
       </GlassCard>
@@ -563,6 +611,7 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
   const [pronouns, setPronouns] = useState(user.pronouns || '');
   const [customStatus, setCustomStatus] = useState(user.customStatus || '');
   const [profileColor, setProfileColor] = useState(user.profileColor || '#58764A');
+  const [profileTheme, setProfileTheme] = useState<NonNullable<User['profileTheme']>>(user.profileTheme || 'terria');
   const [presence, setPresence] = useState<User['presence']>(user.presence);
   const [avatarUri, setAvatarUri] = useState(user.avatarUrl || '');
   const [bannerUri, setBannerUri] = useState(user.bannerUrl || '');
@@ -577,6 +626,7 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
       setPronouns(user.pronouns || '');
       setCustomStatus(user.customStatus || '');
       setProfileColor(user.profileColor || '#58764A');
+      setProfileTheme(user.profileTheme || 'terria');
       setPresence(user.presence);
       setAvatarUri(user.avatarUrl || '');
       setBannerUri(user.bannerUrl || '');
@@ -642,6 +692,7 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
         pronouns: pronouns || undefined, 
         customStatus: customStatus || undefined, 
         profileColor, 
+        profileTheme,
         presence, 
         avatarUrl: avatarUri || undefined, 
         bannerUrl: bannerUri || undefined 
@@ -672,6 +723,7 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
           
           <GlassCard>
             <Text style={styles.label}>Profile Images</Text>
+            <Text style={styles.muted}>GIF avatars and banners can be saved by VIP accounts.</Text>
             {bannerUri && (
               <View style={{ marginTop: 12 }}>
                 <Text style={styles.cardTitle}>Banner Preview</Text>
@@ -709,6 +761,17 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
               ))}
             </View>
           </GlassCard>
+
+          <GlassCard>
+            <Text style={styles.label}>Profile Theme</Text>
+            <View style={styles.segment}>
+              {(Object.keys(profileThemes) as Array<NonNullable<User['profileTheme']>>).map(item => (
+                <Pressable key={item} style={[styles.segmentItem, profileTheme === item && styles.segmentActive]} onPress={() => setProfileTheme(item)}>
+                  <Text style={styles.segmentText}>{profileThemes[item].label}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </GlassCard>
           
           <GlassCard>
             <Text style={styles.label}>Profile Color</Text>
@@ -727,7 +790,9 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
 }
 
 function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab: (tab: AppTab) => void; setUser: (user: User | null) => void; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
-  const [panel, setPanel] = useState<'account' | 'privacy' | 'devices' | 'appearance' | 'voice' | null>(null);
+  const [panel, setPanel] = useState<'account' | 'privacy' | 'devices' | 'appearance' | 'voice' | 'security' | null>(null);
+  const [twoFactor, setTwoFactor] = useState<{ secret: string; qrUrl: string } | null>(null);
+  const [twoFactorCode, setTwoFactorCode] = useState('');
   
   async function logout() {
     try {
@@ -785,17 +850,30 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
           <>
             <GlassCard>
               <Text style={styles.cardTitle}>Direct Messages</Text>
-              <Text style={[styles.muted, { marginTop: 8 }]}>Control who can send you direct messages.</Text>
-              <Text style={[styles.badge, { marginTop: 12 }]}>All friends can message</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Choose who can start DMs with you.</Text>
+              <View style={styles.segment}>{(['everyone', 'friends', 'none'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, (user.privacy?.dmPolicy || 'friends') === item && styles.segmentActive]} onPress={() => api.updatePrivacy({ dmPolicy: item, profileLinks: user.privacy?.profileLinks !== false }).then(next => { setUser(next); notify('success', 'Privacy updated.'); }).catch(error => notify('error', error.message))}><Text style={styles.segmentText}>{item}</Text></Pressable>)}</View>
             </GlassCard>
             <GlassCard>
-              <Text style={styles.cardTitle}>Blocked Users</Text>
-              <Text style={[styles.muted, { marginTop: 8 }]}>You have no blocked users. Users you block cannot see your profile or send messages.</Text>
+              <Text style={styles.cardTitle}>Profile Links</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Allow clickable links in your bio.</Text>
+              <PrimaryButton label={user.privacy?.profileLinks === false ? 'Enable Links' : 'Disable Links'} icon="link" onPress={() => api.updatePrivacy({ dmPolicy: user.privacy?.dmPolicy || 'friends', profileLinks: user.privacy?.profileLinks === false }).then(next => { setUser(next); notify('success', 'Profile links updated.'); }).catch(error => notify('error', error.message))} />
             </GlassCard>
             <GlassCard>
-              <Text style={styles.cardTitle}>Reports & Moderation</Text>
-              <Text style={[styles.muted, { marginTop: 8 }]}>Report users or content that violates community guidelines. Our moderation team reviews all reports.</Text>
-              <PrimaryButton label="View Your Reports" icon="warning" onPress={() => setTab('staff')} />
+              <Text style={styles.cardTitle}>Tickets & Reports</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Track support tickets, reports, and account recovery requests.</Text>
+              <PrimaryButton label="Open Ticket Center" icon="ticket" onPress={() => setTab('tickets')} />
+            </GlassCard>
+          </>
+        )}
+
+        {panel === 'security' && (
+          <>
+            <GlassCard>
+              <Text style={styles.cardTitle}>Two-Factor Authentication</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>{user.twoFactorEnabled ? 'Authenticator login protection is enabled.' : 'Add authenticator protection to your account.'}</Text>
+              {!user.twoFactorEnabled && !twoFactor && <PrimaryButton label="Setup 2FA" icon="qr-code" onPress={() => api.setup2fa().then(setTwoFactor).catch(error => notify('error', error.message))} />}
+              {twoFactor && <><Image source={{ uri: twoFactor.qrUrl }} style={styles.qrImage} /><Text style={styles.muted}>Secret: {twoFactor.secret}</Text><Field icon="keypad" placeholder="6-digit code" value={twoFactorCode} onChangeText={setTwoFactorCode} keyboardType="number-pad" /><PrimaryButton label="Verify 2FA" icon="shield-checkmark" onPress={() => api.verify2fa(twoFactorCode).then(next => { setUser(next); setTwoFactor(null); setTwoFactorCode(''); notify('success', '2FA enabled.'); }).catch(error => notify('error', error.message))} /></>}
+              {user.twoFactorEnabled && <><Field icon="keypad" placeholder="Authenticator code" value={twoFactorCode} onChangeText={setTwoFactorCode} keyboardType="number-pad" /><PrimaryButton label="Disable 2FA" icon="shield" onPress={() => api.disable2fa(twoFactorCode).then(next => { setUser(next); setTwoFactorCode(''); notify('success', '2FA disabled.'); }).catch(error => notify('error', error.message))} /></>}
             </GlassCard>
           </>
         )}
@@ -887,6 +965,7 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
       <Text style={styles.heroSmall}>Settings</Text>
       <SettingsRow icon="person" title="Account" body="Profile, email, password recovery" onPress={() => setPanel('account')} />
       <SettingsRow icon="shield" title="Privacy" body="DM privacy, blocked users, reports" onPress={() => setPanel('privacy')} />
+      <SettingsRow icon="lock-closed" title="Security" body="2FA, login protection, recovery" onPress={() => setPanel('security')} />
       <SettingsRow icon="phone-portrait" title="Devices" body="Active sessions and device management" onPress={() => setPanel('devices')} />
       <SettingsRow icon="color-palette" title="Appearance" body="Theme, colors, and display settings" onPress={() => setPanel('appearance')} />
       <SettingsRow icon="videocam" title="Voice & Video" body="Call settings and media permissions" onPress={() => setPanel('voice')} />
@@ -972,18 +1051,60 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, notify }: { setAnno
   );
 }
 
-function StaffScreen({ notify }: { notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
-  const [reports, setReports] = useState<Loadable<Report[]>>({ loading: true, data: [] });
-  const load = () => api.reports().then(data => setReports({ loading: false, data })).catch(error => { setReports({ loading: false, data: [], error: error.message }); notify('error', error.message); });
+function TicketScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
+  const [tickets, setTickets] = useState<Loadable<Ticket[]>>({ loading: true, data: [] });
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [type, setType] = useState<Ticket['type']>('support');
+  const load = () => api.tickets().then(data => setTickets({ loading: false, data })).catch(error => { setTickets({ loading: false, data: [], error: error.message }); notify('error', error.message); });
   useEffect(() => { load(); }, []);
+  async function create() {
+    if (!subject.trim() || !body.trim()) return notify('error', 'Add a subject and message.');
+    await api.createTicket({ type, subject, body })
+      .then(() => { setSubject(''); setBody(''); notify('success', 'Ticket created.'); load(); })
+      .catch(error => notify('error', error.message));
+  }
+  return (
+    <ScrollView contentContainerStyle={styles.scroll}>
+      <SectionTitle title="Tickets & Reports" action="Refresh" onPress={load} />
+      <GlassCard>
+        <Text style={styles.cardTitle}>New Ticket</Text>
+        <View style={styles.segment}>{(['support', 'report', 'recovery', 'bug'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, type === item && styles.segmentActive]} onPress={() => setType(item)}><Text style={styles.segmentText}>{item}</Text></Pressable>)}</View>
+        <Field icon="bookmark" placeholder="Subject" value={subject} onChangeText={setSubject} />
+        <Field icon="document-text" placeholder="Describe what happened" value={body} onChangeText={setBody} multiline />
+        <PrimaryButton label="Create Ticket" icon="send" onPress={create} />
+      </GlassCard>
+      {tickets.loading ? <LoadingState /> : tickets.error ? <ErrorState message={tickets.error} onRetry={load} /> : tickets.data.map(ticket => (
+        <GlassCard key={ticket.id}>
+          <View style={styles.postTop}><Text style={styles.cardTitle}>{ticket.subject}</Text><Text style={styles.badge}>{ticket.status}</Text></View>
+          <Text style={styles.muted}>{ticket.type} · {new Date(ticket.createdAt).toLocaleDateString()}</Text>
+          <Text style={styles.body}>{ticket.body}</Text>
+          {ticket.proofUrl ? <Pressable onPress={() => openLink(ticket.proofUrl)}><Text style={styles.link}>Open proof</Text></Pressable> : null}
+          <View style={styles.mediaActions}>
+            <SecondaryButton label="Download" icon="download" onPress={() => notify('info', `Ticket ${ticket.id}: ${ticket.subject}`)} />
+            {ticket.status !== 'closed' && <SecondaryButton label="Close" icon="checkmark" onPress={() => notify('info', 'Close actions are handled by staff in this build.')} />}
+          </View>
+        </GlassCard>
+      ))}
+      {tickets.data.length === 0 && !tickets.loading && <EmptyState title="No tickets" body={`No tickets for ${user.displayName}.`} />}
+    </ScrollView>
+  );
+}
+
+function StaffScreen({ notify }: { notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
+  const [queue, setQueue] = useState<Loadable<{ reports: Report[]; tickets: Ticket[] }>>({ loading: true, data: { reports: [], tickets: [] } });
+  const load = () => api.reports().then(data => setQueue({ loading: false, data })).catch(error => { setQueue({ loading: false, data: { reports: [], tickets: [] }, error: error.message }); notify('error', error.message); });
+  useEffect(() => { load(); }, []);
+  const reports = queue.data.reports;
+  const tickets = queue.data.tickets;
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <SectionTitle title="Staff Dashboard" action="Refresh" onPress={load} />
-      <StatsGrid values={[['Queue', String(reports.data.length)], ['Open', String(reports.data.filter(r => r.status === 'open').length)], ['Reviewing', String(reports.data.filter(r => r.status === 'reviewing').length)], ['Resolved', String(reports.data.filter(r => r.status === 'resolved').length)]]} />
+      <StatsGrid values={[['Tickets', String(tickets.length)], ['Reports', String(reports.length)], ['Open', String(tickets.filter(r => r.status === 'open').length)], ['Reviewing', String(tickets.filter(r => r.status === 'reviewing').length)]]} />
       <FeatureCard title="Moderation Tools" body="Review reports, check user context, and escalate incidents to admins." icon="hammer" />
       <FeatureCard title="Safety Watch" body="Track flagged DMs, suspicious groups, and account recovery requests." icon="warning" />
-      {reports.loading ? <LoadingState /> : reports.error ? <ErrorState message={reports.error} onRetry={load} /> : reports.data.map(report => <GlassCard key={report.id}><Text style={styles.cardTitle}>{report.type}</Text><Text style={styles.muted}>{report.reason}</Text><Text style={styles.badge}>{report.status}</Text></GlassCard>)}
-      {reports.data.length === 0 && !reports.loading && <EmptyState title="No reports" body="The moderation queue is clear." />}
+      {queue.loading ? <LoadingState /> : queue.error ? <ErrorState message={queue.error} onRetry={load} /> : tickets.map(ticket => <GlassCard key={ticket.id}><View style={styles.postTop}><Text style={styles.cardTitle}>{ticket.subject}</Text><Text style={styles.badge}>{ticket.status}</Text></View><Text style={styles.muted}>{ticket.type}</Text><Text style={styles.body}>{ticket.body}</Text><View style={styles.mediaActions}><SecondaryButton label="Claim" icon="hand-left" onPress={() => notify('info', 'Claimed locally.')} /><SecondaryButton label="Download" icon="download" onPress={() => notify('info', `Ticket ${ticket.id}: ${ticket.subject}`)} /></View></GlassCard>)}
+      {tickets.length === 0 && !queue.loading && <EmptyState title="No tickets" body="The moderation queue is clear." />}
     </ScrollView>
   );
 }
@@ -1055,17 +1176,18 @@ function SettingsRow({ icon, title, body, onPress }: { icon: keyof typeof Ionico
   );
 }
 
-function settingsPanelTitle(panel: 'account' | 'privacy' | 'devices' | 'appearance' | 'voice') {
-  return ({ account: 'Account', privacy: 'Privacy', devices: 'Logged In Devices', appearance: 'Appearance', voice: 'Voice & Video' })[panel];
+function settingsPanelTitle(panel: 'account' | 'privacy' | 'devices' | 'appearance' | 'voice' | 'security') {
+  return ({ account: 'Account', privacy: 'Privacy', devices: 'Logged In Devices', appearance: 'Appearance', voice: 'Voice & Video', security: 'Security' })[panel];
 }
 
-function settingsPanelBody(panel: 'account' | 'privacy' | 'devices' | 'appearance' | 'voice') {
+function settingsPanelBody(panel: 'account' | 'privacy' | 'devices' | 'appearance' | 'voice' | 'security') {
   return ({
     account: 'Manage profile details and send a recovery request for your account.',
     privacy: 'DM privacy, block controls, and report management are active. More granular toggles can be added without changing account data.',
     devices: 'Current device is signed in. Full device history will appear here once persistent sessions are enabled.',
     appearance: 'Terria is the active theme. The layout is tuned for mobile readability and raised system navigation.',
-    voice: 'Call and video controls are visible in DMs. LiveKit credentials are required before calls can connect.'
+    voice: 'Call and video controls are visible in DMs. LiveKit credentials are required before calls can connect.',
+    security: '2FA, login cooldowns, and recovery controls help protect your account.'
   })[panel];
 }
 
@@ -1082,8 +1204,73 @@ function BadgeIcon({ badge }: { badge: string }) {
   return <Pressable onPress={() => Alert.alert(badge, `${badge} badge`)} style={styles.badgeIcon}><Ionicons name={badgeIcons[badge] || 'ribbon'} size={11} color="#E6C07A" /></Pressable>;
 }
 
+function topPriorityBadge(badges: string[]) {
+  return badgePriority.find(badge => badges.includes(badge)) || badges[0];
+}
+
 function normalizeBadges(badges: string[]) {
   return badges.length ? badges : ['Member'];
+}
+
+function ProfileSheet({
+  user,
+  currentUser,
+  reportReason,
+  reportProof,
+  setReportReason,
+  setReportProof,
+  onClose,
+  onMute,
+  onReport
+}: {
+  user: User | null;
+  currentUser: User;
+  reportReason: string;
+  reportProof: string;
+  setReportReason: (value: string) => void;
+  setReportProof: (value: string) => void;
+  onClose: () => void;
+  onMute: (action: 'mute' | 'block' | 'unfriend', hours?: number) => void;
+  onReport: () => void;
+}) {
+  if (!user) return null;
+  const own = user.id === currentUser.id;
+  const theme = profileThemes[user.profileTheme || 'terria'];
+  return (
+    <Modal visible transparent animationType="slide">
+      <View style={styles.sheetBackdrop}>
+        <View style={[styles.profileSheet, { borderColor: theme.color }]}>
+          {user.bannerUrl ? <Image source={{ uri: user.bannerUrl }} style={styles.sheetBanner} resizeMode="cover" /> : <View style={[styles.sheetBanner, { backgroundColor: user.profileColor || theme.color }]} />}
+          <View style={styles.sheetHeader}>
+            <Image source={user.avatarUrl ? { uri: user.avatarUrl } : logo} style={styles.sheetAvatar} />
+            <View style={styles.flex}>
+              <Text style={styles.profileName}>{user.displayName}</Text>
+              <Text style={styles.muted}>@{user.tag || user.username}</Text>
+              <View style={styles.badgeRow}>{normalizeBadges(user.badges).map(badge => <BadgeChip key={badge} badge={badge} />)}</View>
+            </View>
+            <IconButton icon="close" onPress={onClose} />
+          </View>
+          <RichText text={user.bio || 'No bio yet.'} />
+          {!own && (
+            <>
+              <View style={styles.segment}>
+                <Pressable style={styles.segmentItem} onPress={() => onMute('mute', 1)}><Text style={styles.segmentText}>Mute 1h</Text></Pressable>
+                <Pressable style={styles.segmentItem} onPress={() => onMute('mute', 24)}><Text style={styles.segmentText}>Mute 1d</Text></Pressable>
+                <Pressable style={styles.segmentItem} onPress={() => onMute('mute', 168)}><Text style={styles.segmentText}>Mute 7d</Text></Pressable>
+              </View>
+              <View style={styles.mediaActions}>
+                <SecondaryButton label="Unfriend" icon="person-remove" onPress={() => onMute('unfriend')} />
+                <SecondaryButton label="Block" icon="ban" onPress={() => onMute('block')} />
+              </View>
+              <Field icon="warning" placeholder="Report reason" value={reportReason} onChangeText={setReportReason} multiline />
+              <Field icon="image" placeholder="Optional proof image URL/base64" value={reportProof} onChangeText={setReportProof} autoCapitalize="none" />
+              <PrimaryButton label="Create Report Ticket" icon="flag" onPress={onReport} />
+            </>
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
 }
 
 function openLink(url?: string) {
@@ -1135,7 +1322,7 @@ function SectionTitle({ title, action, onPress }: { title: string; action?: stri
 }
 
 function UserList({ title, users, empty, right }: { title: string; users: User[]; empty: string; right?: (user: User) => React.ReactNode }) {
-  return <View><Text style={styles.label}>{title}</Text>{users.length === 0 ? <EmptyState title="Empty" body={empty} /> : users.map(user => <GlassCard key={user.id} style={styles.userRow}><View style={styles.avatar}><Text style={styles.avatarText}>{user.displayName.slice(0, 1)}</Text></View><View style={styles.flex}><Text style={styles.body}>{user.displayName}</Text><Text style={styles.muted}>{user.customStatus || user.presence}</Text><View style={styles.badgeRowMini}>{user.badges.slice(0, 3).map(b => <Text key={b} style={styles.badgeMini}>{b}</Text>)}</View></View>{right?.(user)}</GlassCard>)}</View>;
+  return <View><Text style={styles.label}>{title}</Text>{users.length === 0 ? <EmptyState title="Empty" body={empty} /> : users.map(user => <GlassCard key={user.id} style={styles.userRow}><View style={styles.avatar}><Text style={styles.avatarText}>{user.displayName.slice(0, 1)}</Text></View><View style={styles.flex}><Text style={styles.body}>{user.displayName}</Text><Text style={styles.muted}>@{user.tag || user.username}</Text><Text style={styles.muted}>{user.customStatus || user.presence}</Text><View style={styles.badgeRowMini}>{user.badges.slice(0, 3).map(b => <Text key={b} style={styles.badgeMini}>{b}</Text>)}</View></View>{right?.(user)}</GlassCard>)}</View>;
 }
 
 function RequestList({ title, requests, accept, deny }: { title: string; requests: FriendState['incoming']; accept?: (id: string) => void; deny?: (id: string) => void }) {
@@ -1300,6 +1487,8 @@ const styles = StyleSheet.create({
   thread: { flex: 1 },
   threadHeader: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: 1, borderColor: 'rgba(218,226,202,.1)' },
   threadHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  chatTools: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
+  searchInput: { flex: 1, minHeight: 42, color: '#F4F0E6', borderRadius: 10, backgroundColor: '#151D16', paddingHorizontal: 12, borderWidth: 1, borderColor: 'rgba(218,226,202,.12)' },
   
   messagesContainer: { gap: 10, marginVertical: 14 },
   messageList: { paddingVertical: 12, gap: 10, paddingBottom: 16 },
@@ -1363,6 +1552,12 @@ const styles = StyleSheet.create({
   noticeText: { color: '#fff', fontWeight: '800' },
   
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,.68)', alignItems: 'center', justifyContent: 'center', padding: 20 },
+  sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,.58)', justifyContent: 'flex-end' },
+  profileSheet: { maxHeight: '88%', borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, backgroundColor: '#182019', padding: 16, gap: 12 },
+  sheetBanner: { height: 96, borderRadius: 12, backgroundColor: '#33412E' },
+  sheetHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  sheetAvatar: { width: 72, height: 72, borderRadius: 18, borderWidth: 2, borderColor: '#1B241C', backgroundColor: '#111712' },
+  qrImage: { width: 220, height: 220, alignSelf: 'center', borderRadius: 12, backgroundColor: '#fff', marginTop: 12 },
   announcementModal: { width: '100%', borderRadius: 12, backgroundColor: '#182019', borderWidth: 1, borderColor: 'rgba(230,192,122,.3)', padding: 20, gap: 14 },
   modalCard: { width: '100%', gap: 14, alignItems: 'center', padding: 24 },
   editorPanel: { width: '100%', borderRadius: 12, backgroundColor: '#182019', borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', padding: 18, gap: 8 },
