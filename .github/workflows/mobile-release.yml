@@ -11,7 +11,6 @@ jobs:
     permissions:
       contents: write
     env:
-      EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
       EXPO_PUBLIC_API_URL: ${{ secrets.EXPO_PUBLIC_API_URL }}
     steps:
       - uses: actions/checkout@v5
@@ -19,18 +18,21 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
       - run: npm ci
       - run: npm run typecheck
-      - uses: expo/expo-github-action@v8
-        with:
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
-      - name: Build APK with EAS
-        run: cd apps/mobile && eas build --platform android --profile production --non-interactive --wait --json > ../../eas-build.json
-      - name: Download APK artifact
+      - name: Generate Android project
+        run: cd apps/mobile && npx expo prebuild --platform android --clean --non-interactive
+      - name: Build APK with Gradle
         run: |
-          node -e "const fs=require('fs'); const raw=fs.readFileSync('eas-build.json','utf8'); const data=JSON.parse(raw); const build=Array.isArray(data)?data[0]:data; const url=build?.artifacts?.buildUrl || build?.artifactUrl || build?.buildUrl; if(!url){ console.error(raw); process.exit(1); } fs.writeFileSync('apk-url.txt', url);"
-          curl -L "$(cat apk-url.txt)" -o Zevryl.apk
+          cd apps/mobile/android
+          chmod +x ./gradlew
+          ./gradlew assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk ../../../Zevryl.apk
       - name: Create GitHub release and attach APK
         uses: softprops/action-gh-release@v2
         with:
