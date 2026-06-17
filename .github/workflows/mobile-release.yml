@@ -24,10 +24,17 @@ jobs:
       - name: Generate Android project
         run: cd apps/mobile && npx expo prebuild --platform android --clean --non-interactive
       - name: Build APK with Gradle
+        shell: bash
         run: |
           cd apps/mobile/android
           chmod +x ./gradlew
-          ./gradlew assembleRelease
+          set +e
+          ./gradlew assembleRelease --stacktrace 2>&1 | tee gradle-release.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=Gradle release build failed::$(tail -n 80 gradle-release.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            exit "$status"
+          fi
           cp app/build/outputs/apk/release/app-release.apk ../../../Zevryl.apk
       - name: Create GitHub release and attach APK
         uses: softprops/action-gh-release@v2
