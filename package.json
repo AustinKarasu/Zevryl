@@ -1,0 +1,24 @@
+{
+  "name": "zevryl",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/mobile",
+    "services/api"
+  ],
+  "scripts": {
+    "dev:mobile": "npm --workspace @zevryl/mobile run start",
+    "dev:api": "npm --workspace @zevryl/api run dev",
+    "build": "npm run typecheck",
+    "typecheck": "npm --workspaces --if-present run typecheck",
+    "lint": "npm --workspaces --if-present run lint"
+  },
+  "overrides": {
+    "postcss": "^8.5.10",
+    "js-yaml": "^4.1.1",
+    "uuid": "^11.1.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
