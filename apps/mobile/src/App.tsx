@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
+import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
@@ -45,6 +46,7 @@ import type {
   Message,
   Report,
   RoleDefinition,
+  StaffAnalytics,
   Ticket,
   User
 } from './types';
@@ -69,6 +71,13 @@ type NoticeTone = 'error' | 'success' | 'info';
 type Notice = { tone: NoticeTone; text: string } | null;
 type BootCache = { user: User | null; announcement: Announcement | null; savedAt: number };
 type CallState = { kind: 'voice' | 'video'; roomName: string; url?: string; token?: string; joined: boolean; muted: boolean; deafened: boolean };
+
+function recoveryDeliveryMessage(result: unknown) {
+  const delivery = typeof result === 'object' && result ? (result as { delivery?: string }).delivery : undefined;
+  return delivery === 'ticket'
+    ? 'Recovery request created for staff review.'
+    : 'Recovery email sent to your inbox.';
+}
 
 const emptyFriends: FriendState = { friends: [], incoming: [], outgoing: [], blocked: [] };
 const emptyStats: DashboardStats = { users: 0, reports: 0, activeGroups: 0, systemHealth: 0, announcements: 0, blogs: 0 };
@@ -358,8 +367,17 @@ function Root() {
 
   useEffect(() => {
     if (!user || !Device.isDevice) return;
+    if (Platform.OS === 'android') {
+      Notifications.setNotificationChannelAsync('default', {
+        name: 'Zevryl',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#E6C07A'
+      }).catch(() => undefined);
+    }
+    const projectId = Constants.easConfig?.projectId || Constants.expoConfig?.extra?.eas?.projectId;
     Notifications.requestPermissionsAsync()
-      .then((result: any) => result.granted || result.status === 'granted' ? Notifications.getExpoPushTokenAsync() : null)
+      .then((result: any) => result.granted || result.status === 'granted' ? Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined) : null)
       .then(tokenResult => tokenResult?.data ? api.registerPushToken(tokenResult.data, Platform.OS) : null)
       .catch(() => undefined);
   }, [user?.id]);
@@ -403,7 +421,7 @@ function Root() {
           })}
         </View>
         <NoticeFooter notice={notice} bottom={insets.bottom + 94} />
-        <BottomNav tab={tab} setTab={setTab} user={user} bottom={Math.max(insets.bottom + 18, 34)} />
+        <BottomNav tab={tab} setTab={setTab} bottom={Math.max(insets.bottom + 18, 34)} />
         <AnnouncementModal
           announcement={announcement}
           visible={showAnnouncement}
@@ -517,7 +535,7 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
   async function forgotPassword() {
     if (!email) return notify('error', 'Enter your email first.');
     await api.forgotPassword(email)
-      .then(() => notify('success', 'Password reset request accepted.'))
+      .then(result => notify('success', recoveryDeliveryMessage(result)))
       .catch(error => notify('error', error.message));
   }
 
@@ -1076,13 +1094,14 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
 function ProfileScreen({ user, setUser, notify }: { user: User; setUser: (user: User) => void; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
   const [editing, setEditing] = useState(false);
   const theme = profileThemes[user.profileTheme || 'terria'];
+  const accent = user.profileColor || theme.color;
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
-      <GlassCard style={[styles.profileHero, { borderColor: theme.color, backgroundColor: `${theme.color}22` }]}>
-        {user.bannerUrl ? <Image source={{ uri: user.bannerUrl }} style={styles.profileBannerImage} resizeMode="cover" /> : <View style={[styles.profileBanner, { backgroundColor: user.profileColor || theme.color }]} />}
+      <GlassCard style={[styles.profileHero, { borderColor: accent, backgroundColor: `${accent}22` }]}>
+        {user.bannerUrl ? <Image source={{ uri: user.bannerUrl }} style={styles.profileBannerImage} resizeMode="cover" /> : <View style={[styles.profileBanner, { backgroundColor: accent }]} />}
         <View>
-          <Image source={user.avatarUrl ? { uri: user.avatarUrl } : logo} style={styles.profileLogo} />
+          <Image source={user.avatarUrl ? { uri: user.avatarUrl } : logo} style={[styles.profileLogo, { borderColor: accent }]} />
           <View style={[styles.statusDot, { backgroundColor: presenceMeta[user.presence].color }]} />
         </View>
         <Text style={styles.profileName}>{user.displayName}</Text>
@@ -1375,7 +1394,7 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
               <Text style={[styles.muted, { marginTop: 8 }]}>Forgot your password? We can send you a recovery link.</Text>
               <PrimaryButton label="Send Recovery Email" icon="mail" onPress={() => {
                 api.forgotPassword(user.email)
-                  .then(() => notify('success', 'Recovery email sent to your inbox.'))
+                  .then(result => notify('success', recoveryDeliveryMessage(result)))
                   .catch(error => notify('error', error instanceof Error ? error.message : 'Failed to send recovery email'));
               }} />
             </GlassCard>
@@ -1621,6 +1640,7 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
   const [moderationReason, setModerationReason] = useState('');
   const [badgeMenuOpen, setBadgeMenuOpen] = useState(false);
   const [roleMenuOpen, setRoleMenuOpen] = useState(false);
+  const [adminMenuOpen, setAdminMenuOpen] = useState(false);
 
   const load = async () => {
     const [nextStats, nextAnnouncements, nextBlogs, nextBadges, nextRoles, nextUsers, nextLogs, nextAnalytics] = await Promise.allSettled([api.adminStats(), api.adminAnnouncements(), api.blogs(), api.badgeCatalog(), api.roles(), api.adminUsers(), api.auditLogs(), api.adminAnalytics()]);
@@ -1679,6 +1699,16 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
       .catch(error => notify('error', error.message));
   }
 
+  function editAdminUser(user: User) {
+    setAdminUser(user.email);
+    setAdminNewUsername(user.username);
+    setAdminDisc(user.discriminator || '');
+    setAdminMobile(user.mobile || '');
+    setAdminAltEmail(user.alternateEmail || '');
+    setAdminPassword('');
+    setPage('users');
+  }
+
   async function searchModerationUsers() {
     if (!userSearch.trim()) return setUserResults([]);
     await api.searchUsers(userSearch)
@@ -1695,29 +1725,35 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
       .catch(error => notify('error', error.message));
   }
 
-  const adminPages: Array<[typeof page, string]> = [
-    ['overview', 'Overview'],
-    ['users', 'Users'],
-    ['moderation', 'Moderation'],
-    ['content', 'Content'],
-    ['badges', 'Badges/Roles'],
-    ['logs', 'Logs'],
-    ['analytics', 'Analytics']
+  const adminPages: Array<[typeof page, string, keyof typeof Ionicons.glyphMap]> = [
+    ['overview', 'Overview', 'speedometer'],
+    ['users', 'Users', 'people'],
+    ['moderation', 'Moderation', 'hammer'],
+    ['content', 'Content', 'newspaper'],
+    ['badges', 'Badges/Roles', 'ribbon'],
+    ['logs', 'Logs', 'list'],
+    ['analytics', 'Analytics', 'analytics']
   ];
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
-      <Text style={styles.heroSmall}>Admin Dashboard</Text>
-      <View style={styles.segment}>{adminPages.map(([key, label]) => <Pressable key={key} style={[styles.segmentItem, page === key && styles.segmentActive]} onPress={() => setPage(key)}><Text style={styles.segmentText}>{label}</Text></Pressable>)}</View>
+      <View style={styles.dashboardHeader}>
+        <IconButton icon="menu" onPress={() => setAdminMenuOpen(true)} />
+        <View style={styles.flex}>
+          <Text style={styles.heroSmall}>Admin Dashboard</Text>
+          <Text style={styles.muted}>{adminPages.find(([key]) => key === page)?.[1]}</Text>
+        </View>
+      </View>
       {page === 'overview' && <><StatsGrid values={[['Users', String(stats.users)], ['Active', String(stats.activeUsers ?? 0)], ['Reports', String(stats.reports)], ['Invites', String(stats.invites ?? 0)]]} /><GlassCard><Text style={styles.cardTitle}>Control Center</Text><Text style={styles.muted}>Jump into moderation tickets, export data, and manage user access from one place.</Text><View style={styles.ticketActions}><SecondaryButton label="Tickets" icon="ticket" onPress={() => setTab('tickets')} /><SecondaryButton label="Staff Queue" icon="briefcase" onPress={() => setTab('staff')} /><SecondaryButton label="Export Users" icon="download" onPress={exportUsers} /></View></GlassCard></>}
       {page === 'content' && <><GlassCard><Text style={styles.cardTitle}>Announcement</Text><Field icon="megaphone" placeholder="Title" value={title} onChangeText={setTitle} /><Field icon="document-text" placeholder="Message with links" value={body} onChangeText={setBody} multiline /><Field icon="image" placeholder="Image URL" value={imageUrl} onChangeText={setImageUrl} autoCapitalize="none" /><Field icon="link" placeholder="Clickable link URL" value={linkUrl} onChangeText={setLinkUrl} autoCapitalize="none" /><PrimaryButton label="Publish Announcement" icon="send" onPress={broadcast} /></GlassCard><GlassCard><Text style={styles.cardTitle}>Announcement Logs</Text><PrimaryButton label="Refresh" icon="refresh" onPress={load} />{adminAnnouncements.length === 0 ? <Text style={styles.muted}>No announcements published.</Text> : adminAnnouncements.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.title}</Text><Text style={styles.meta}>Published {new Date(item.createdAt).toLocaleString()}</Text></View><IconButton icon="trash" onPress={() => removeAnnouncement(item.id)} /></View>)}</GlassCard><GlassCard><Text style={styles.cardTitle}>Blog Post</Text><Field icon="newspaper" placeholder="Title" value={blogTitle} onChangeText={setBlogTitle} /><Field icon="document-text" placeholder="Body with links" value={blogBody} onChangeText={setBlogBody} multiline /><Field icon="image" placeholder="Image URL" value={blogImageUrl} onChangeText={setBlogImageUrl} autoCapitalize="none" /><Field icon="link" placeholder="Clickable link URL" value={blogLinkUrl} onChangeText={setBlogLinkUrl} autoCapitalize="none" /><PrimaryButton label="Publish Blog" icon="cloud-upload" onPress={createBlog} /></GlassCard><GlassCard><Text style={styles.cardTitle}>Blog Logs</Text>{adminBlogs.length === 0 ? <Text style={styles.muted}>No blog posts published.</Text> : adminBlogs.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.title}</Text><Text style={styles.meta}>{item.category || 'Update'} - {new Date(item.createdAt).toLocaleString()}</Text></View><IconButton icon="trash" onPress={() => removeBlog(item.id)} /></View>)}</GlassCard></>}
       {page === 'badges' && <><GlassCard><Text style={styles.cardTitle}>Badges</Text><Field icon="at" placeholder="Username, email, or tag" value={badgeUser} onChangeText={setBadgeUser} autoCapitalize="none" /><DropdownButton label="Selected badge" value={badge || 'Choose badge'} icon="ribbon" onPress={() => setBadgeMenuOpen(true)} /><PrimaryButton label="Grant Badge" icon="ribbon" onPress={() => api.grantBadge({ username: badgeUser, badge }).then(() => notify('success', 'Badge granted.')).catch(error => notify('error', error.message))} /><Field icon="add" placeholder="Create/edit badge name" value={newBadgeName} onChangeText={setNewBadgeName} /><View style={styles.ticketActions}><SecondaryButton label="Save Badge" icon="save" onPress={() => api.createBadge({ name: newBadgeName, icon: 'ribbon', color: '#E6C07A' }).then(() => { setNewBadgeName(''); load(); }).catch(error => notify('error', error.message))} />{badgeCatalog.find(item => item.name === badge) ? <SecondaryButton label="Delete Selected" icon="trash" onPress={() => api.deleteBadge(badgeCatalog.find(item => item.name === badge)!.id).then(load).catch(error => notify('error', error.message))} /> : null}</View></GlassCard><GlassCard><Text style={styles.cardTitle}>Roles</Text><Field icon="at" placeholder="Username, email, or tag" value={roleUser} onChangeText={setRoleUser} autoCapitalize="none" /><DropdownButton label="Selected role" value={roles.find(item => item.id === role)?.name || 'Choose role'} icon="key" onPress={() => setRoleMenuOpen(true)} /><Text style={styles.muted}>{roles.find(item => item.id === role)?.permissions.join(', ')}</Text><PrimaryButton label="Update Role" icon="key" onPress={() => api.setRole({ username: roleUser, role }).then(() => notify('success', 'Role updated.')).catch(error => notify('error', error.message))} /></GlassCard></>}
       {page === 'moderation' && <GlassCard><Text style={styles.cardTitle}>Punishment Center</Text><Field icon="search" placeholder="Search users" value={userSearch} onChangeText={setUserSearch} autoCapitalize="none" /><PrimaryButton label="Search Users" icon="search" onPress={searchModerationUsers} />{userResults.map(item => <Pressable key={item.id} style={styles.memberPick} onPress={() => setModerationTarget(item)}><Text style={styles.body}>{item.displayName} @{item.tag || item.username}</Text><Ionicons name={moderationTarget?.id === item.id ? 'radio-button-on' : 'radio-button-off'} size={22} color="#CDA16A" /></Pressable>)}<View style={styles.segment}>{(['mute', 'ban', 'unban'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, moderationAction === item && styles.segmentActive]} onPress={() => setModerationAction(item)}><Text style={styles.segmentText}>{item}</Text></Pressable>)}</View><Field icon="timer" placeholder="Duration hours" value={moderationHours} onChangeText={setModerationHours} keyboardType="number-pad" /><Field icon="document-text" placeholder="Reason shown in punishment log" value={moderationReason} onChangeText={setModerationReason} multiline /><PrimaryButton label="Apply Punishment" icon="hammer" onPress={runModeration} /></GlassCard>}
-      {page === 'users' && <><GlassCard><Text style={styles.cardTitle}>Users</Text><Text style={styles.muted}>{adminUsers.length} recent users loaded. Search for exact account edits below.</Text>{adminUsers.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.displayName}</Text><Text style={styles.meta}>@{item.tag || item.username} - {item.role}</Text></View><IconButton icon="create" onPress={() => { setAdminUser(item.email); setPage('users'); }} /></View>)}</GlassCard><GlassCard><Text style={styles.cardTitle}>User Control</Text><Field icon="at" placeholder="Username, email, or tag" value={adminUser} onChangeText={setAdminUser} autoCapitalize="none" /><Field icon="person" placeholder="New username" value={adminNewUsername} onChangeText={setAdminNewUsername} autoCapitalize="none" /><Field icon="keypad" placeholder="New 5-digit #" value={adminDisc} onChangeText={setAdminDisc} keyboardType="number-pad" maxLength={5} /><Field icon="call" placeholder="Mobile" value={adminMobile} onChangeText={setAdminMobile} keyboardType="phone-pad" /><Field icon="mail" placeholder="Alternate email" value={adminAltEmail} onChangeText={setAdminAltEmail} autoCapitalize="none" /><Field icon="lock-closed" placeholder="New password" value={adminPassword} onChangeText={setAdminPassword} secureTextEntry /><PrimaryButton label="Update User" icon="save" onPress={() => updateAdminUser(false)} /><SecondaryButton label="Reset Username Limit" icon="refresh" onPress={() => updateAdminUser(true)} /><SecondaryButton label="Download Users CSV" icon="download" onPress={exportUsers} /></GlassCard></>}
+      {page === 'users' && <><GlassCard><Text style={styles.cardTitle}>Users</Text><Text style={styles.muted}>{adminUsers.length} recent users loaded. Tap edit to load account fields below.</Text>{adminUsers.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.displayName}</Text><Text style={styles.meta}>@{item.tag || item.username} - {item.role}</Text></View><IconButton icon="create" onPress={() => editAdminUser(item)} /></View>)}</GlassCard><GlassCard><Text style={styles.cardTitle}>User Control</Text><Field icon="at" placeholder="Username, email, or tag" value={adminUser} onChangeText={setAdminUser} autoCapitalize="none" /><Field icon="person" placeholder="New username" value={adminNewUsername} onChangeText={setAdminNewUsername} autoCapitalize="none" /><Field icon="keypad" placeholder="New 5-digit #" value={adminDisc} onChangeText={setAdminDisc} keyboardType="number-pad" maxLength={5} /><Field icon="call" placeholder="Mobile" value={adminMobile} onChangeText={setAdminMobile} keyboardType="phone-pad" /><Field icon="mail" placeholder="Alternate email" value={adminAltEmail} onChangeText={setAdminAltEmail} autoCapitalize="none" /><Field icon="lock-closed" placeholder="New password" value={adminPassword} onChangeText={setAdminPassword} secureTextEntry /><PrimaryButton label="Update User" icon="save" onPress={() => updateAdminUser(false)} /><SecondaryButton label="Reset Username Limit" icon="refresh" onPress={() => updateAdminUser(true)} /><SecondaryButton label="Download Users CSV" icon="download" onPress={exportUsers} /></GlassCard></>}
       {page === 'logs' && <><GlassCard><Text style={styles.cardTitle}>Audit Logs</Text>{auditLogs.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.action}</Text><Text style={styles.meta}>{item.targetType} - {new Date(item.createdAt).toLocaleString()}</Text></View></View>)}</GlassCard><GlassCard><Text style={styles.cardTitle}>Punishment Logs</Text>{auditLogs.filter(item => item.targetType === 'punishment' || item.action.startsWith('punishment.')).map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.action.replace('punishment.', '')}</Text><Text style={styles.meta}>{String(item.metadata.reason || 'No reason')} - {new Date(item.createdAt).toLocaleString()}</Text></View></View>)}</GlassCard></>}
       {page === 'analytics' && <><StatsGrid values={[['Crash Logs', String(analytics?.crashLogs.length ?? 0)], ['Daily Users', String(analytics?.dailyUsers.at(-1)?.count ?? 0)], ['New Users', String(analytics?.newUsers.at(-1)?.count ?? 0)], ['Tickets', String(analytics?.tickets.at(-1)?.count ?? 0)]]} /><GraphCard title="Daily Users" data={analytics?.dailyUsers ?? []} /><GraphCard title="New Users" data={analytics?.newUsers ?? []} /><GraphCard title="Tickets Created" data={analytics?.tickets ?? []} /><GraphCard title="Reports Created" data={analytics?.reports ?? []} /><GlassCard><Text style={styles.cardTitle}>Crash Logs</Text>{(analytics?.crashLogs ?? []).length === 0 ? <Text style={styles.muted}>No app crash logs reported.</Text> : analytics!.crashLogs.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.reason}</Text><Text style={styles.meta}>{item.device || 'Unknown device'} - {new Date(item.createdAt).toLocaleString()}</Text></View></View>)}</GlassCard></>}
       <ChoiceModal visible={badgeMenuOpen} title="Choose Badge" items={badgeCatalog.map(item => ({ key: item.name, label: item.name, icon: item.icon as keyof typeof Ionicons.glyphMap }))} selected={badge} onChoose={(key) => { setBadge(key); setBadgeMenuOpen(false); }} onClose={() => setBadgeMenuOpen(false)} />
       <ChoiceModal visible={roleMenuOpen} title="Choose Role" items={roles.map(item => ({ key: item.id, label: item.name, body: item.permissions.join(', ') }))} selected={role} onChoose={(key) => { setRole(key as User['role']); setRoleMenuOpen(false); }} onClose={() => setRoleMenuOpen(false)} />
+      <ChoiceModal visible={adminMenuOpen} title="Admin Menu" items={adminPages.map(([key, label, icon]) => ({ key, label, icon }))} selected={page} onChoose={(key) => { setPage(key as typeof page); setAdminMenuOpen(false); }} onClose={() => setAdminMenuOpen(false)} />
     </ScrollView>
   );
 }
@@ -1913,15 +1949,53 @@ function TicketScreen({ user, notify }: { user: User; notify: (tone: 'error' | '
 
 function StaffScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
   const [queue, setQueue] = useState<Loadable<{ reports: Report[]; tickets: Ticket[] }>>({ loading: true, data: { reports: [], tickets: [] } });
+  const [page, setPage] = useState<'reports' | 'logs' | 'mod' | 'analytics'>('reports');
+  const [menuOpen, setMenuOpen] = useState(false);
   const [staffNote, setStaffNote] = useState('');
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
-  const load = () => api.reports().then(data => setQueue({ loading: false, data })).catch(error => { setQueue({ loading: false, data: { reports: [], tickets: [] }, error: error.message }); notify('error', error.message); });
+  const [logs, setLogs] = useState<Loadable<AuditLog[]>>({ loading: true, data: [] });
+  const [analytics, setAnalytics] = useState<StaffAnalytics | null>(null);
+  const [userSearch, setUserSearch] = useState('');
+  const [userResults, setUserResults] = useState<User[]>([]);
+  const [moderationTarget, setModerationTarget] = useState<User | null>(null);
+  const [moderationAction, setModerationAction] = useState<'mute' | 'ban' | 'unban'>('mute');
+  const [moderationHours, setModerationHours] = useState('8');
+  const [moderationReason, setModerationReason] = useState('');
+  const load = () => {
+    api.reports().then(data => setQueue({ loading: false, data })).catch(error => { setQueue({ loading: false, data: { reports: [], tickets: [] }, error: error.message }); notify('error', error.message); });
+    api.staffLogs().then(data => setLogs({ loading: false, data })).catch(error => setLogs({ loading: false, data: [], error: error.message }));
+    api.staffAnalytics().then(setAnalytics).catch(() => undefined);
+  };
   useEffect(() => { load(); }, []);
   const reports = queue.data.reports;
   const tickets = queue.data.tickets;
+  const staffPages: Array<[typeof page, string, keyof typeof Ionicons.glyphMap]> = [
+    ['reports', 'Reports', 'flag'],
+    ['logs', 'Logs', 'list'],
+    ['mod', 'Mod', 'hammer'],
+    ['analytics', 'Analytics', 'analytics']
+  ];
   async function staffAction(ticket: Ticket, action: 'claim' | 'close' | 'reopen' | 'delete' | 'ban') {
     const task = action === 'delete' ? api.deleteTicket(ticket.id) : api.updateTicket(ticket.id, { action });
     await task.then(() => { notify('success', `Ticket ${action} complete.`); load(); }).catch(error => notify('error', error.message));
+  }
+  async function searchModerationUsers() {
+    if (!userSearch.trim()) return setUserResults([]);
+    await api.searchUsers(userSearch).then(setUserResults).catch(error => notify('error', error.message));
+  }
+  async function runModeration() {
+    if (!moderationTarget) return notify('error', 'Select a user first.');
+    if (!moderationReason.trim()) return notify('error', 'Add a reason for the moderation log.');
+    await api.moderateUser({
+      userId: moderationTarget.id,
+      action: moderationAction,
+      hours: Math.max(1, Number(moderationHours) || 8),
+      reason: moderationReason.trim()
+    }).then(() => {
+      notify('success', `${moderationAction} applied to ${moderationTarget.displayName}.`);
+      setModerationReason('');
+      load();
+    }).catch(error => notify('error', error.message));
   }
   async function download(ticket: Ticket) {
     await api.downloadTicket(ticket.id)
@@ -1966,12 +2040,24 @@ function StaffScreen({ user, notify }: { user: User; notify: (tone: 'error' | 's
   }
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
-      <SectionTitle title="Staff Dashboard" action="Refresh" onPress={load} />
-      <StatsGrid values={[['Tickets', String(tickets.length)], ['Reports', String(reports.length)], ['Open', String(tickets.filter(r => r.status === 'open').length)], ['Reviewing', String(tickets.filter(r => r.status === 'reviewing').length)]]} />
-      <FeatureCard title="Moderation Tools" body="Review reports, check user context, and escalate incidents to admins." icon="hammer" />
-      <FeatureCard title="Safety Watch" body="Track flagged DMs, suspicious groups, and account recovery requests." icon="warning" />
-      {queue.loading ? <LoadingState /> : queue.error ? <ErrorState message={queue.error} onRetry={load} /> : tickets.map(ticket => <Pressable key={ticket.id} onPress={() => setSelectedTicket(ticket)}><GlassCard><View style={styles.postTop}><Text style={styles.cardTitle}>Ticket #{ticket.id.slice(0, 8)}</Text><TicketStatusPill status={ticket.status} /></View><Text style={styles.body}>{ticket.subject}</Text><Text style={styles.muted}>{ticket.type} - {new Date(ticket.createdAt).toLocaleDateString()}</Text></GlassCard></Pressable>)}
-      {tickets.length === 0 && !queue.loading && <EmptyState title="No tickets" body="The moderation queue is clear." />}
+      <View style={styles.dashboardHeader}>
+        <IconButton icon="menu" onPress={() => setMenuOpen(true)} />
+        <View style={styles.flex}>
+          <Text style={styles.heroSmall}>Staff Dashboard</Text>
+          <Text style={styles.muted}>{staffPages.find(([key]) => key === page)?.[1]}</Text>
+        </View>
+        <IconButton icon="refresh" onPress={load} />
+      </View>
+      {page === 'reports' && <>
+        <StatsGrid values={[['Tickets', String(tickets.length)], ['Reports', String(reports.length)], ['Open', String(tickets.filter(r => r.status === 'open').length)], ['Reviewing', String(tickets.filter(r => r.status === 'reviewing').length)]]} />
+        {queue.loading ? <LoadingState /> : queue.error ? <ErrorState message={queue.error} onRetry={load} /> : tickets.map(ticket => <Pressable key={ticket.id} onPress={() => setSelectedTicket(ticket)}><GlassCard><View style={styles.postTop}><Text style={styles.cardTitle}>Ticket #{ticket.id.slice(0, 8)}</Text><TicketStatusPill status={ticket.status} /></View><Text style={styles.body}>{ticket.subject}</Text><Text style={styles.muted}>{ticket.type} - {new Date(ticket.createdAt).toLocaleDateString()}</Text></GlassCard></Pressable>)}
+        {reports.map(report => <GlassCard key={report.id}><View style={styles.postTop}><Text style={styles.cardTitle}>Report #{report.id.slice(0, 8)}</Text><Text style={styles.badge}>{report.status}</Text></View><Text style={styles.body}>{report.reason}</Text><Text style={styles.muted}>{report.type} - {new Date(report.createdAt).toLocaleString()}</Text>{report.proofUrl ? <Pressable onPress={() => openLink(report.proofUrl)}><Text style={styles.link}>Open proof</Text></Pressable> : null}</GlassCard>)}
+        {tickets.length === 0 && reports.length === 0 && !queue.loading && <EmptyState title="No reports" body="The moderation queue is clear." />}
+      </>}
+      {page === 'logs' && <GlassCard><Text style={styles.cardTitle}>Staff Logs</Text><Text style={styles.muted}>Admin account activity is hidden here.</Text>{logs.loading ? <LoadingState /> : logs.error ? <ErrorState message={logs.error} onRetry={load} /> : logs.data.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.action}</Text><Text style={styles.meta}>{item.targetType} - {new Date(item.createdAt).toLocaleString()}</Text></View></View>)}{!logs.loading && logs.data.length === 0 ? <Text style={styles.muted}>No staff logs yet.</Text> : null}</GlassCard>}
+      {page === 'mod' && <GlassCard><Text style={styles.cardTitle}>Ban / Mute</Text><Field icon="search" placeholder="Search users" value={userSearch} onChangeText={setUserSearch} autoCapitalize="none" /><PrimaryButton label="Search Users" icon="search" onPress={searchModerationUsers} />{userResults.map(item => <Pressable key={item.id} style={styles.memberPick} onPress={() => setModerationTarget(item)}><View style={styles.flex}><Text style={styles.body}>{item.displayName}</Text><Text style={styles.meta}>@{item.tag || item.username}{item.mutedUntil ? ` - muted until ${new Date(item.mutedUntil).toLocaleString()}` : ''}</Text></View><Ionicons name={moderationTarget?.id === item.id ? 'radio-button-on' : 'radio-button-off'} size={22} color="#CDA16A" /></Pressable>)}<View style={styles.segment}>{(['mute', 'ban', 'unban'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, moderationAction === item && styles.segmentActive]} onPress={() => setModerationAction(item)}><Text style={styles.segmentText}>{item}</Text></Pressable>)}</View>{moderationAction === 'mute' ? <Field icon="timer" placeholder="Duration hours" value={moderationHours} onChangeText={setModerationHours} keyboardType="number-pad" /> : null}<Field icon="document-text" placeholder="Reason" value={moderationReason} onChangeText={setModerationReason} multiline /><PrimaryButton label="Apply" icon="hammer" onPress={runModeration} /></GlassCard>}
+      {page === 'analytics' && <><StatsGrid values={[['Daily Reports', String(analytics?.dailyReports.at(-1)?.count ?? 0)], ['Daily Bans/Mutes', String(analytics?.dailyBansMutes.at(-1)?.count ?? 0)], ['Reports Total', String(reports.length)], ['Tickets Total', String(tickets.length)]]} /><GraphCard title="Daily Reports" data={analytics?.dailyReports ?? []} /><GraphCard title="Daily Bans/Mutes" data={analytics?.dailyBansMutes ?? []} /></>}
+      <ChoiceModal visible={menuOpen} title="Staff Menu" items={staffPages.map(([key, label, icon]) => ({ key, label, icon }))} selected={page} onChoose={(key) => { setPage(key as typeof page); setMenuOpen(false); }} onClose={() => setMenuOpen(false)} />
     </ScrollView>
   );
 }
@@ -1985,13 +2071,11 @@ function Header({ user, setTab }: { user: User; setTab: (tab: AppTab) => void })
   );
 }
 
-function BottomNav({ tab, setTab, user, bottom }: { tab: AppTab; setTab: (tab: AppTab) => void; user: User; bottom: number }) {
+function BottomNav({ tab, setTab, bottom }: { tab: AppTab; setTab: (tab: AppTab) => void; bottom: number }) {
   const items: Array<[AppTab, keyof typeof Ionicons.glyphMap]> = [['home', 'home'], ['friends', 'people'], ['chats', 'chatbubbles'], ['groups', 'grid'], ['tickets', 'ticket'], ['settings', 'settings']];
   return (
     <BlurView intensity={70} tint="dark" style={[styles.nav, { bottom }]}>
       {items.map(([key, icon]) => <Pressable key={key} onPress={() => setTab(key)} style={styles.navItem}><Ionicons name={icon} size={21} color={tab === key ? '#E6C07A' : '#9AA391'} /></Pressable>)}
-      {(user.role === 'staff' || user.role === 'admin') && <Pressable onPress={() => setTab('staff')} style={styles.navItem}><Ionicons name="briefcase" size={20} color={tab === 'staff' ? '#E6C07A' : '#9AA391'} /></Pressable>}
-      {user.role === 'admin' && <Pressable onPress={() => setTab('admin')} style={styles.navItem}><Ionicons name="shield-checkmark" size={20} color={tab === 'admin' ? '#E6C07A' : '#9AA391'} /></Pressable>}
     </BlurView>
   );
 }
@@ -2100,9 +2184,10 @@ function BadgeToast({ badge, visible, onClose }: { badge: string; visible: boole
 
 function UserAvatar({ user, size = 50 }: { user: User; size?: number }) {
   const radius = Math.max(9, Math.round(size * 0.24));
+  const accent = user.profileColor || '#7D8B58';
   return user.avatarUrl
-    ? <Image source={{ uri: user.avatarUrl }} style={[styles.avatarImage, { width: size, height: size, borderRadius: radius }]} />
-    : <View style={[styles.avatar, { width: size, height: size, borderRadius: radius }]}><Text style={styles.avatarText}>{user.displayName.slice(0, 1).toUpperCase()}</Text></View>;
+    ? <Image source={{ uri: user.avatarUrl }} style={[styles.avatarImage, { width: size, height: size, borderRadius: radius, borderColor: accent }]} />
+    : <View style={[styles.avatar, { width: size, height: size, borderRadius: radius, borderColor: accent, backgroundColor: `${accent}44` }]}><Text style={styles.avatarText}>{user.displayName.slice(0, 1).toUpperCase()}</Text></View>;
 }
 
 function topPriorityBadge(badges: string[]) {
@@ -2693,6 +2778,7 @@ const styles = StyleSheet.create({
   
   // Settings Panels
   panelHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16, height: 56 },
+  dashboardHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12, minHeight: 56 },
   backButton: { width: 44, height: 44, borderRadius: 10, backgroundColor: 'rgba(230,192,122,.12)', alignItems: 'center', justifyContent: 'center' },
   spacer: { width: 44 },
   panelFooter: { paddingTop: 20, paddingBottom: 10, gap: 10 },

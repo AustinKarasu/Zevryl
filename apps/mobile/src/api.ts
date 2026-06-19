@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
-import type { AdminAnalytics, Announcement, AppUpdate, AuditLog, BadgeDefinition, BlogPost, Conversation, DashboardStats, FriendState, Group, Message, Report, RoleDefinition, Ticket, User } from './types';
+import type { AdminAnalytics, Announcement, AppUpdate, AuditLog, BadgeDefinition, BlogPost, Conversation, DashboardStats, FriendState, Group, Message, Report, RoleDefinition, StaffAnalytics, Ticket, User } from './types';
 
 const configuredUrl = normalizeApiUrl(
   process.env.EXPO_PUBLIC_API_URL ||
@@ -71,6 +71,10 @@ async function token() {
   return SecureStore.getItemAsync('zevryl.accessToken');
 }
 
+async function refreshToken() {
+  return SecureStore.getItemAsync('zevryl.refreshToken');
+}
+
 export async function setTokens(accessToken: string, refreshToken?: string) {
   await SecureStore.setItemAsync('zevryl.accessToken', accessToken);
   if (refreshToken) await SecureStore.setItemAsync('zevryl.refreshToken', refreshToken);
@@ -81,7 +85,21 @@ export async function clearTokens() {
   await SecureStore.deleteItemAsync('zevryl.refreshToken');
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function refreshSession(): Promise<boolean> {
+  const savedRefreshToken = await refreshToken();
+  if (!savedRefreshToken || !configuredUrl) return false;
+  const response = await fetch(`${configuredUrl}/auth/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refreshToken: savedRefreshToken })
+  }).catch(() => null);
+  if (!response?.ok) return false;
+  const data = await response.json() as { accessToken: string; refreshToken?: string };
+  await setTokens(data.accessToken, data.refreshToken || savedRefreshToken);
+  return true;
+}
+
+async function request<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
   if (!configuredUrl) {
     throw new ApiError(0, 'Backend API URL is not configured for this build.');
   }
@@ -108,19 +126,21 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (!response.ok) {
+    if (response.status === 401 && retry && await refreshSession()) return request<T>(path, init, false);
     throw new ApiError(response.status, await responseErrorMessage(response));
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
-async function requestText(path: string, init: RequestInit = {}): Promise<string> {
+async function requestText(path: string, init: RequestInit = {}, retry = true): Promise<string> {
   if (!configuredUrl) throw new ApiError(0, 'Backend API URL is not configured for this build.');
   const headers = new Headers(init.headers);
   const accessToken = await token();
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
   const response = await fetch(`${configuredUrl}${path}`, { ...init, headers });
   if (!response.ok) {
+    if (response.status === 401 && retry && await refreshSession()) return requestText(path, init, false);
     throw new ApiError(response.status, await responseErrorMessage(response));
   }
   return response.text();
@@ -150,6 +170,7 @@ export const api = {
   disable2fa: (code: string) => request<User>('/me/2fa/disable', { method: 'POST', body: JSON.stringify({ code }) }),
   logout: () => request('/auth/logout', { method: 'POST' }),
   forgotPassword: (email: string) => request('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
+  resetPassword: (token: string, password: string) => request('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, password }) }),
   friends: () => request<FriendState>('/friends'),
   requestFriend: (username: string) => request('/friends/request', { method: 'POST', body: JSON.stringify({ username }) }),
   acceptFriend: (id: string) => request(`/friends/requests/${id}/accept`, { method: 'POST' }),
@@ -225,5 +246,7 @@ export const api = {
   updateUser: (payload: { username: string; newUsername?: string; discriminator?: string; mobile?: string; alternateEmail?: string; newPassword?: string; resetUsernameLimit?: boolean }) =>
     request<User>('/admin/users/update', { method: 'POST', body: JSON.stringify(payload) }),
   exportUsers: () => requestText('/admin/users/export'),
-  reports: () => request<{ reports: Report[]; tickets: Ticket[] }>('/staff/reports')
+  reports: () => request<{ reports: Report[]; tickets: Ticket[] }>('/staff/reports'),
+  staffLogs: () => request<AuditLog[]>('/staff/logs'),
+  staffAnalytics: () => request<StaffAnalytics>('/staff/analytics')
 };

@@ -24,6 +24,7 @@ export type User = {
   presence: Presence;
   badges: string[];
   role: 'user' | 'staff' | 'admin';
+  mutedUntil?: string;
   usernameChanges?: string[];
   activeAt?: string;
   lastIp?: string;
@@ -194,4 +195,9 @@ export type AdminAnalytics = {
   newUsers: Array<{ date: string; count: number }>;
   tickets: Array<{ date: string; count: number }>;
   reports: Array<{ date: string; count: number }>;
+};
+
+export type StaffAnalytics = {
+  dailyReports: Array<{ date: string; count: number }>;
+  dailyBansMutes: Array<{ date: string; count: number }>;
 };

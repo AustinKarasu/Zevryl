@@ -7,6 +7,7 @@ import Fastify from 'fastify';
 import { Redis } from 'ioredis';
 import { SignJWT, jwtVerify } from 'jose';
 import { AccessToken } from 'livekit-server-sdk';
+import { createHash, randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { z } from 'zod';
 
@@ -23,6 +24,9 @@ const env = {
   livekitUrl: process.env.LIVEKIT_URL ?? '',
   livekitApiKey: process.env.LIVEKIT_API_KEY ?? '',
   livekitApiSecret: process.env.LIVEKIT_API_SECRET ?? '',
+  publicAppUrl: process.env.PUBLIC_APP_URL ?? 'https://github.com/AustinKarasu/Zevryl/releases/latest',
+  resendApiKey: process.env.RESEND_API_KEY ?? '',
+  mailFrom: process.env.MAIL_FROM ?? 'Zevryl <noreply@zevryl.app>',
   databasePoolMax: Number(process.env.DATABASE_POOL_MAX ?? 40)
 };
 
@@ -72,6 +76,7 @@ function toUser(row: any) {
     presence: row.presence,
     badges: row.badges ?? [],
     role: row.role,
+    mutedUntil: row.muted_until ?? undefined,
     activeAt: row.active_at ?? undefined,
     lastIp: row.last_ip ?? undefined,
     privacy: {
@@ -226,6 +231,7 @@ async function migrate() {
     alter table users add column if not exists dm_policy text not null default 'friends';
     alter table users add column if not exists profile_links boolean not null default true;
     alter table users add column if not exists two_factor_secret text;
+    alter table users add column if not exists muted_until timestamptz;
     alter table messages add column if not exists pinned boolean not null default false;
     alter table reports add column if not exists proof_url text;
     alter table reports add column if not exists target_user_id uuid references users(id) on delete set null;
@@ -263,6 +269,14 @@ async function migrate() {
       platform text not null,
       created_at timestamptz not null default now(),
       last_seen_at timestamptz not null default now()
+    );
+    create table if not exists recovery_tokens (
+      id uuid primary key,
+      user_id uuid not null references users(id) on delete cascade,
+      token_hash text not null unique,
+      expires_at timestamptz not null,
+      used_at timestamptz,
+      created_at timestamptz not null default now()
     );
     create table if not exists blogs (
       id uuid primary key,
@@ -320,6 +334,7 @@ async function migrate() {
     create index if not exists idx_messages_pinned on messages(conversation_id, pinned) where pinned=true;
     create index if not exists idx_tickets_status_created on tickets(status, created_at desc);
     create index if not exists idx_push_tokens_user on push_tokens(user_id);
+    create index if not exists idx_recovery_tokens_hash on recovery_tokens(token_hash);
     create index if not exists idx_audit_created on audit_logs(created_at desc);
   `);
 }
@@ -340,11 +355,38 @@ async function sign(user: Auth, kind: 'access' | 'refresh') {
 async function requireAuth(request: any) {
   const header = request.headers.authorization;
   if (!header?.startsWith('Bearer ')) throw app.httpErrors.unauthorized('Please sign in.');
-  const verified = await jwtVerify(header.slice(7), accessKey);
+  let verified;
+  try {
+    verified = await jwtVerify(header.slice(7), accessKey, { clockTolerance: 120 });
+  } catch {
+    throw app.httpErrors.unauthorized('Session expired. Please sign in again.');
+  }
   const userId = String(verified.payload.sub ?? '');
   const user = (await pool.query('select id, role from users where id=$1 limit 1', [userId])).rows[0];
   if (!user) throw app.httpErrors.unauthorized('Please sign in again.');
   request.auth = { id: user.id, role: user.role as Auth['role'] };
+}
+
+function hashToken(token: string) {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+async function sendRecoveryEmail(to: string, recoveryUrl: string) {
+  if (!env.resendApiKey) return false;
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.resendApiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: env.mailFrom,
+      to,
+      subject: 'Reset your Zevryl password',
+      text: `Use this link to reset your Zevryl password. It expires in 30 minutes.\n\n${recoveryUrl}`
+    })
+  });
+  return response.ok;
 }
 
 function requireRole(request: any, roles: Auth['role'][]) {
@@ -535,8 +577,70 @@ app.post('/auth/login', async request => {
   return { user, accessToken, refreshToken };
 });
 
-app.post('/auth/forgot-password', async () => ({ ok: true }));
-app.post('/auth/reset-password', async () => ({ ok: true }));
+app.post('/auth/refresh', async request => {
+  const body = z.object({ refreshToken: z.string().min(20) }).parse(request.body);
+  let verified;
+  try {
+    verified = await jwtVerify(body.refreshToken, refreshKey, { clockTolerance: 120 });
+  } catch {
+    throw app.httpErrors.unauthorized('Session expired. Please sign in again.');
+  }
+  if (verified.payload.kind !== 'refresh') throw app.httpErrors.unauthorized('Invalid refresh token.');
+  const userId = String(verified.payload.sub ?? '');
+  const user = (await pool.query('select * from users where id=$1 and is_banned=false', [userId])).rows[0];
+  if (!user) throw app.httpErrors.unauthorized('Please sign in again.');
+  const sessions = await pool.query('select refresh_token_hash from sessions where user_id=$1 and revoked_at is null order by created_at desc limit 20', [userId]);
+  let validSession = false;
+  for (const session of sessions.rows) {
+    if (await argon2.verify(session.refresh_token_hash, body.refreshToken).catch(() => false)) {
+      validSession = true;
+      break;
+    }
+  }
+  if (!validSession) throw app.httpErrors.unauthorized('Please sign in again.');
+  const auth = { id: user.id, role: user.role as Auth['role'] };
+  return { user: toUser(user), accessToken: await sign(auth, 'access'), refreshToken: body.refreshToken };
+});
+
+app.post('/auth/forgot-password', async request => {
+  const body = z.object({ email }).parse(request.body);
+  const user = (await pool.query('select * from users where email=$1 and is_banned=false', [body.email])).rows[0];
+  if (!user) return { ok: true, delivery: 'accepted' };
+  const rawToken = randomBytes(32).toString('base64url');
+  const recoveryUrl = `${env.publicAppUrl}${env.publicAppUrl.includes('?') ? '&' : '?'}resetToken=${rawToken}`;
+  await pool.query(
+    'insert into recovery_tokens (id,user_id,token_hash,expires_at) values ($1,$2,$3,now() + interval \'30 minutes\')',
+    [crypto.randomUUID(), user.id, hashToken(rawToken)]
+  );
+  const sent = await sendRecoveryEmail(user.email, recoveryUrl).catch(() => false);
+  if (!sent) {
+    const ticketId = crypto.randomUUID();
+    await pool.query(
+      'insert into tickets (id,user_id,type,subject,body) values ($1,$2,$3,$4,$5)',
+      [ticketId, user.id, 'recovery', 'Password recovery requested', 'Email delivery is not configured. Staff should verify the account owner before resetting the password.']
+    );
+    await audit(user.id, 'recovery.ticket_created', 'ticket', ticketId);
+  }
+  await audit(user.id, sent ? 'recovery.email_sent' : 'recovery.email_queued', 'user', user.id);
+  return { ok: true, delivery: sent ? 'email' : 'ticket' };
+});
+
+app.post('/auth/reset-password', async request => {
+  const body = z.object({ token: z.string().min(20), password: z.string().min(8) }).parse(request.body);
+  const tokenHash = hashToken(body.token);
+  const row = (await pool.query(
+    `select rt.*, u.role from recovery_tokens rt
+     join users u on u.id=rt.user_id
+     where rt.token_hash=$1 and rt.used_at is null and rt.expires_at > now()`,
+    [tokenHash]
+  )).rows[0];
+  if (!row) throw app.httpErrors.badRequest('Recovery link expired. Send a new recovery email.');
+  await pool.query('update users set password_hash=$2, updated_at=now() where id=$1', [row.user_id, await argon2.hash(body.password)]);
+  await pool.query('update recovery_tokens set used_at=now() where id=$1', [row.id]);
+  await pool.query('update sessions set revoked_at=now() where user_id=$1', [row.user_id]);
+  await audit(row.user_id, 'recovery.password_reset', 'user', row.user_id);
+  return { ok: true };
+});
 app.post('/auth/otp/request', async () => ({ ok: true }));
 app.post('/auth/otp/verify', async () => ({ ok: true }));
 app.post('/auth/logout', async request => {
@@ -848,6 +952,8 @@ app.get('/messages/:conversationId', async request => {
 
 app.post('/messages', async request => {
   const body = z.object({ conversationId: uuid, body: z.string().min(1).max(4000), type: z.enum(['text', 'image', 'video', 'file', 'gif']).default('text'), attachmentUrl: z.string().optional() }).parse(request.body);
+  const mute = (await pool.query('select muted_until from users where id=$1 and muted_until > now()', [request.auth!.id])).rows[0];
+  if (mute?.muted_until) throw app.httpErrors.forbidden(`You are muted until ${new Date(mute.muted_until).toLocaleString()}.`);
   const id = crypto.randomUUID();
   await pool.query('insert into messages (id,conversation_id,sender_id,body,type,attachment_url) values ($1,$2,$3,$4,$5,$6)', [id, body.conversationId, request.auth!.id, body.body, body.type, body.attachmentUrl]);
   await redis.publish('messages', JSON.stringify({ id, conversationId: body.conversationId })).catch(() => undefined);
@@ -1129,6 +1235,7 @@ app.post('/admin/users/moderate', async request => {
   const body = z.object({ userId: uuid, action: z.enum(['mute', 'ban', 'unban']), reason: z.string().optional(), hours: z.number().optional() }).parse(request.body);
   if (body.action === 'ban') await pool.query('update users set is_banned=true where id=$1', [body.userId]);
   if (body.action === 'unban') await pool.query('update users set is_banned=false where id=$1', [body.userId]);
+  if (body.action === 'mute') await pool.query('update users set muted_until=now() + ($2::int || \' hours\')::interval where id=$1', [body.userId, body.hours ?? 8]);
   await audit(request.auth!.id, `punishment.${body.action}`, 'punishment', body.userId, {
     action: body.action,
     hours: body.action === 'mute' ? body.hours ?? 8 : body.hours,
@@ -1202,6 +1309,36 @@ app.get('/staff/reports', async request => {
     reports: rows.rows.map(row => ({ id: row.id, type: row.type, reason: row.reason, status: row.status, createdAt: row.created_at, proofUrl: row.proof_url, reporterId: row.reporter_id, targetUserId: row.target_user_id })),
     tickets: await Promise.all(tickets.rows.map(ticketWithUpdates))
   };
+});
+
+app.get('/staff/logs', async request => {
+  requireRole(request, ['admin', 'staff']);
+  const rows = await pool.query(
+    `select al.* from audit_logs al
+     left join users actor on actor.id=al.actor_id
+     where coalesce(actor.role, 'user') <> 'admin'
+       and (al.target_type in ('ticket','report','punishment','user') or al.action like 'punishment.%')
+     order by al.created_at desc limit 200`
+  );
+  return rows.rows.map(row => ({
+    id: row.id,
+    actorId: row.actor_id ?? undefined,
+    action: row.action,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    metadata: row.metadata ?? {},
+    createdAt: row.created_at
+  }));
+});
+
+app.get('/staff/analytics', async request => {
+  requireRole(request, ['admin', 'staff']);
+  const series = async (sql: string) => (await pool.query(sql)).rows.map(row => ({ date: row.day, count: Number(row.count) }));
+  const [dailyReports, dailyBansMutes] = await Promise.all([
+    series(`select to_char(day, 'YYYY-MM-DD') as day, coalesce(count(r.id),0) as count from generate_series(current_date - interval '13 days', current_date, interval '1 day') day left join reports r on date(r.created_at)=day::date group by day order by day`),
+    series(`select to_char(day, 'YYYY-MM-DD') as day, coalesce(count(al.id),0) as count from generate_series(current_date - interval '13 days', current_date, interval '1 day') day left join audit_logs al on date(al.created_at)=day::date and al.action in ('punishment.ban','punishment.mute') group by day order by day`)
+  ]);
+  return { dailyReports, dailyBansMutes };
 });
 
 await migrate();
