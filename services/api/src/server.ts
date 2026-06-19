@@ -867,7 +867,8 @@ app.get('/friends', async request => {
     [userId]
   );
   const incoming = await pool.query(
-    `select fr.*, from_u.*, to_u.id as to_id from friend_requests fr
+    `select fr.id as request_id, fr.status as request_status, fr.created_at as request_created_at, from_u.*, to_u.id as to_id
+     from friend_requests fr
      join users from_u on from_u.id=fr.from_user_id
      join users to_u on to_u.id=fr.to_user_id
      left join blocks b on b.blocker_id=$1 and b.blocked_id=from_u.id
@@ -875,7 +876,8 @@ app.get('/friends', async request => {
     [userId]
   );
   const outgoing = await pool.query(
-    `select fr.*, to_u.* from friend_requests fr
+    `select fr.id as request_id, fr.status as request_status, fr.created_at as request_created_at, to_u.*
+     from friend_requests fr
      join users to_u on to_u.id=fr.to_user_id
      left join blocks b on b.blocker_id=$1 and b.blocked_id=to_u.id
      where fr.from_user_id=$1 and fr.status='pending' and b.blocked_id is null`,
@@ -884,8 +886,8 @@ app.get('/friends', async request => {
   const blocked = await pool.query(`select u.* from users u join blocks b on b.blocked_id=u.id where b.blocker_id=$1 order by b.created_at desc`, [userId]);
   return {
     friends: friends.rows.map(toUser),
-    incoming: incoming.rows.map(row => ({ id: row.id, fromUser: toUser(row), toUser: toUser({ ...row, id: row.to_id }), status: row.status, createdAt: row.created_at })),
-    outgoing: outgoing.rows.map(row => ({ id: row.id, fromUser: toUser({ ...row, id: userId }), toUser: toUser(row), status: row.status, createdAt: row.created_at })),
+    incoming: incoming.rows.map(row => ({ id: row.request_id, fromUser: toUser(row), toUser: toUser({ ...row, id: row.to_id }), status: row.request_status, createdAt: row.request_created_at })),
+    outgoing: outgoing.rows.map(row => ({ id: row.request_id, fromUser: toUser({ ...row, id: userId }), toUser: toUser(row), status: row.request_status, createdAt: row.request_created_at })),
     blocked: blocked.rows.map(toUser)
   };
 });

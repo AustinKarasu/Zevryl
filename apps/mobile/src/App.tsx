@@ -1115,7 +1115,7 @@ function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { us
 
   const emojiChoices = emojis.filter(item => !emojiSearch.trim() || item.includes(emojiSearch.trim()));
   return (
-    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={Platform.OS === 'ios' ? 84 : 22} style={styles.flex}>
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={Platform.OS === 'ios' ? 84 : 0} style={styles.flex}>
       <View style={styles.chatLayout}>
         {!selected ? (
           <ScrollView contentContainerStyle={styles.dmListFull}>
@@ -1176,7 +1176,7 @@ function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { us
           {typingText ? <Text style={styles.typingText}>{typingText}</Text> : null}
           {showEmoji && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search emoji or use your keyboard for all emoji" placeholderTextColor="#899486" value={emojiSearch} onChangeText={setEmojiSearch} /> <View style={styles.pickerRow}>{emojiChoices.map(item => <Pressable key={item} style={styles.pickerButton} onPress={() => setBody(prev => `${prev}${item}`)}><Text style={styles.emojiText}>{item}</Text></Pressable>)}</View></View>}
           {showGif && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search GIFs" placeholderTextColor="#899486" value={gifSearch} onChangeText={setGifSearch} /><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.gifPicker}>{gifLoading ? <ActivityIndicator color="#E6C07A" /> : gifResults.length ? gifResults.map(item => <Pressable key={item.id} onPress={() => send({ type: 'gif', attachmentUrl: item.url, body: item.title || 'GIF' })}><Image source={{ uri: item.previewUrl || item.url }} style={styles.gifThumb} /></Pressable>) : <Text style={styles.muted}>No GIF found. Try another search.</Text>}</ScrollView></View>}
-          <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom + 8, 14) }]}>
+          <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom + 6, 10) }]}>
             <IconButton icon="happy" onPress={() => openTray('emoji')} />
             <IconButton icon="film" onPress={() => openTray('gif')} />
             <IconButton icon="attach" onPress={() => Alert.alert('Upload', 'Choose media source', [{ text: 'Photo Library', onPress: () => pickChatImage(false) }, { text: 'Camera', onPress: () => pickChatImage(true) }, { text: 'Cancel', style: 'cancel' }])} />
@@ -3021,22 +3021,22 @@ const styles = StyleSheet.create({
   friendOptionText: { color: '#E7EBDD', fontSize: 15, fontWeight: '500', flex: 1 },
   
   // Chat & Messages
-  chatLayout: { flex: 1, paddingHorizontal: 10, paddingBottom: 96, gap: 8 },
-  dmListFull: { padding: 6, gap: 10 },
+  chatLayout: { flex: 1, paddingHorizontal: 10, paddingBottom: 0, gap: 8 },
+  dmListFull: { padding: 6, gap: 10, paddingBottom: 118 },
   dmCard: { minHeight: 66, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(218,226,202,.13)', backgroundColor: 'rgba(22,30,23,.82)', padding: 12, flexDirection: 'row', alignItems: 'center', gap: 12 },
   dmRail: { width: 122, borderRightWidth: 1, borderColor: 'rgba(218,226,202,.1)', paddingTop: 8, gap: 8 },
   dmItem: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10, borderRadius: 10 },
   dmItemActive: { backgroundColor: 'rgba(230,192,122,.14)' },
   dmTitle: { color: '#F4F0E6', fontWeight: '800', fontSize: 14 },
   emptyRail: { color: '#899486', fontSize: 12 },
-  thread: { flex: 1 },
+  thread: { flex: 1, justifyContent: 'flex-end' },
   threadHeader: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: 1, borderColor: 'rgba(218,226,202,.1)' },
   threadHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   chatTools: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
   searchInput: { flex: 1, minHeight: 42, color: '#F4F0E6', borderRadius: 10, backgroundColor: '#151D16', paddingHorizontal: 12, borderWidth: 1, borderColor: 'rgba(218,226,202,.12)' },
   
   messagesContainer: { gap: 10, marginVertical: 14 },
-  messageList: { paddingVertical: 12, gap: 10, paddingBottom: 28 },
+  messageList: { paddingTop: 12, gap: 10, paddingBottom: 12 },
   messageRow: { alignItems: 'flex-start' },
   messageOwn: { alignItems: 'flex-end' },
   messageBubble: { maxWidth: '92%', borderRadius: 12, padding: 12, marginBottom: 10, backgroundColor: 'rgba(30,42,33,.8)' },
@@ -3060,7 +3060,7 @@ const styles = StyleSheet.create({
   gifImage: { width: 190, height: 130, borderRadius: 10, backgroundColor: '#111712' },
   chatImage: { width: 214, height: 150, borderRadius: 10, backgroundColor: '#111712' },
   pickerRow: { flexDirection: 'row', gap: 6, paddingVertical: 8, flexWrap: 'wrap' },
-  pickerPanel: { gap: 8, paddingVertical: 8 },
+  pickerPanel: { gap: 8, paddingVertical: 8, borderTopWidth: 1, borderColor: 'rgba(218,226,202,.08)', backgroundColor: 'rgba(17,23,18,.98)' },
   pickerButton: { width: 40, height: 40, borderRadius: 10, backgroundColor: '#202A21', alignItems: 'center', justifyContent: 'center' },
   emojiText: { fontSize: 22 },
   gifPicker: { flexDirection: 'row', gap: 8, paddingVertical: 10 },
@@ -3068,7 +3068,7 @@ const styles = StyleSheet.create({
   
   chatCard: { gap: 12 },
   composerContainer: { flexDirection: 'row', alignItems: 'flex-end', gap: 12, padding: 14, borderTopWidth: 1, borderColor: 'rgba(255,255,255,.08)', backgroundColor: 'rgba(5,7,11,.92)' },
-  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingVertical: 8, paddingBottom: 10, backgroundColor: 'rgba(17,23,18,.96)' },
+  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingTop: 8, paddingHorizontal: 2, backgroundColor: 'rgba(17,23,18,.98)', borderTopWidth: 1, borderColor: 'rgba(218,226,202,.08)' },
   composerInput: { flex: 1, minHeight: 58, maxHeight: 132, color: '#F4F0E6', borderRadius: 12, backgroundColor: '#151D16', paddingHorizontal: 14, paddingVertical: 14, fontSize: 15, borderWidth: 1, borderColor: 'rgba(218,226,202,.12)' },
   pinnedBar: { minHeight: 38, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', backgroundColor: 'rgba(230,192,122,.10)', paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   pinnedText: { color: '#EDE4C8', fontWeight: '800', flex: 1, fontSize: 12 },
