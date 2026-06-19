@@ -40,6 +40,7 @@ const pool = new pg.Pool({
 const redis = new Redis(env.redisUrl, { lazyConnect: true });
 const accessKey = new TextEncoder().encode(env.accessSecret);
 const refreshKey = new TextEncoder().encode(env.refreshSecret);
+const authClockToleranceSeconds = 10 * 60;
 
 type Auth = { id: string; role: 'user' | 'staff' | 'admin' };
 
@@ -344,11 +345,12 @@ async function audit(actorId: string | null, action: string, targetType: string,
 }
 
 async function sign(user: Auth, kind: 'access' | 'refresh') {
+  const now = Math.floor(Date.now() / 1000);
   return new SignJWT({ role: user.role, kind })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(user.id)
-    .setIssuedAt()
-    .setExpirationTime(kind === 'access' ? '15m' : '30d')
+    .setIssuedAt(now - 60)
+    .setExpirationTime(now + (kind === 'access' ? 60 * 60 : 60 * 60 * 24 * 30))
     .sign(kind === 'access' ? accessKey : refreshKey);
 }
 
@@ -357,7 +359,7 @@ async function requireAuth(request: any) {
   if (!header?.startsWith('Bearer ')) throw app.httpErrors.unauthorized('Please sign in.');
   let verified;
   try {
-    verified = await jwtVerify(header.slice(7), accessKey, { clockTolerance: 120 });
+    verified = await jwtVerify(header.slice(7), accessKey, { clockTolerance: authClockToleranceSeconds });
   } catch {
     throw app.httpErrors.unauthorized('Session expired. Please sign in again.');
   }
@@ -581,7 +583,7 @@ app.post('/auth/refresh', async request => {
   const body = z.object({ refreshToken: z.string().min(20) }).parse(request.body);
   let verified;
   try {
-    verified = await jwtVerify(body.refreshToken, refreshKey, { clockTolerance: 120 });
+    verified = await jwtVerify(body.refreshToken, refreshKey, { clockTolerance: authClockToleranceSeconds });
   } catch {
     throw app.httpErrors.unauthorized('Session expired. Please sign in again.');
   }
@@ -756,6 +758,14 @@ app.post('/friends/requests/:id/deny', async request => {
   const params = z.object({ id: uuid }).parse(request.params);
   await pool.query('update friend_requests set status=$1, responded_at=now() where id=$2 and to_user_id=$3', ['denied', params.id, request.auth!.id]);
   await audit(request.auth!.id, 'friend.deny', 'friend_request', params.id);
+  return { ok: true };
+});
+
+app.delete('/friends/requests/:id', async request => {
+  const params = z.object({ id: uuid }).parse(request.params);
+  const row = (await pool.query('delete from friend_requests where id=$1 and from_user_id=$2 and status=$3 returning id,to_user_id', [params.id, request.auth!.id, 'pending'])).rows[0];
+  if (!row) throw app.httpErrors.notFound('Request not found.');
+  await audit(request.auth!.id, 'friend.cancel', 'friend_request', params.id, { toUserId: row.to_user_id });
   return { ok: true };
 });
 
@@ -1027,7 +1037,7 @@ app.post('/calls/token', async request => {
   const token = new AccessToken(env.livekitApiKey, env.livekitApiSecret, {
     identity: request.auth!.id,
     name: user?.display_name ?? 'Zevryl User',
-    ttl: 60 * 60 * 2
+    ttl: 60 * 60 * 12
   });
   token.addGrant({ room: body.roomName, roomJoin: true, canPublish: body.canPublish, canSubscribe: body.canSubscribe });
   await audit(request.auth!.id, 'call.token', 'room', body.roomName);
@@ -1134,10 +1144,19 @@ app.get('/admin/audit', async request => {
   const values: string[] = [];
   const where = query.type ? 'where target_type=$1 or action like $1 || \'.%\'' : '';
   if (query.type) values.push(query.type);
-  const rows = await pool.query(`select * from audit_logs ${where} order by created_at desc limit 200`, values);
+  const rows = await pool.query(
+    `select al.*, actor.email as actor_email, actor.display_name as actor_name
+     from audit_logs al
+     left join users actor on actor.id=al.actor_id
+     ${where ? where.replace('target_type', 'al.target_type').replace('action', 'al.action') : ''}
+     order by al.created_at desc limit 200`,
+    values
+  );
   return rows.rows.map(row => ({
     id: row.id,
     actorId: row.actor_id ?? undefined,
+    actorEmail: row.actor_email ?? undefined,
+    actorName: row.actor_name ?? undefined,
     action: row.action,
     targetType: row.target_type,
     targetId: row.target_id,
@@ -1315,7 +1334,7 @@ app.get('/staff/reports', async request => {
 app.get('/staff/logs', async request => {
   requireRole(request, ['admin', 'staff']);
   const rows = await pool.query(
-    `select al.* from audit_logs al
+    `select al.*, actor.email as actor_email, actor.display_name as actor_name from audit_logs al
      left join users actor on actor.id=al.actor_id
      where coalesce(actor.role, 'user') <> 'admin'
        and (al.target_type in ('ticket','report','punishment','user') or al.action like 'punishment.%')
@@ -1324,6 +1343,8 @@ app.get('/staff/logs', async request => {
   return rows.rows.map(row => ({
     id: row.id,
     actorId: row.actor_id ?? undefined,
+    actorEmail: row.actor_email ?? undefined,
+    actorName: row.actor_name ?? undefined,
     action: row.action,
     targetType: row.target_type,
     targetId: row.target_id,

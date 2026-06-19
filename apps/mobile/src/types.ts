@@ -182,6 +182,8 @@ export type AppUpdate = {
 export type AuditLog = {
   id: string;
   actorId?: string;
+  actorEmail?: string;
+  actorName?: string;
   action: string;
   targetType: string;
   targetId: string;

@@ -8,6 +8,8 @@ const configuredUrl = normalizeApiUrl(
     ''
 );
 const requestTimeoutMs = 7000;
+const accessRefreshSkewSeconds = 120;
+let refreshInFlight: Promise<boolean> | null = null;
 
 function normalizeApiUrl(url?: string) {
   const trimmed = url?.trim();
@@ -85,7 +87,33 @@ export async function clearTokens() {
   await SecureStore.deleteItemAsync('zevryl.refreshToken');
 }
 
+function decodeJwtExp(jwt: string): number | null {
+  const payload = jwt.split('.')[1];
+  if (!payload) return null;
+  try {
+    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(payload.length / 4) * 4, '=');
+    const json = decodeURIComponent(
+      atob(base64)
+        .split('')
+        .map(char => `%${char.charCodeAt(0).toString(16).padStart(2, '0')}`)
+        .join('')
+    );
+    const parsed = JSON.parse(json) as { exp?: unknown };
+    return typeof parsed.exp === 'number' ? parsed.exp : null;
+  } catch {
+    return null;
+  }
+}
+
 async function refreshSession(): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = refreshSessionNow().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
+}
+
+async function refreshSessionNow(): Promise<boolean> {
   const savedRefreshToken = await refreshToken();
   if (!savedRefreshToken || !configuredUrl) return false;
   const response = await fetch(`${configuredUrl}/auth/refresh`, {
@@ -93,10 +121,22 @@ async function refreshSession(): Promise<boolean> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refreshToken: savedRefreshToken })
   }).catch(() => null);
-  if (!response?.ok) return false;
+  if (!response?.ok) {
+    if (response?.status === 401) await clearTokens();
+    return false;
+  }
   const data = await response.json() as { accessToken: string; refreshToken?: string };
   await setTokens(data.accessToken, data.refreshToken || savedRefreshToken);
   return true;
+}
+
+async function validAccessToken() {
+  const accessToken = await token();
+  if (!accessToken) return null;
+  const exp = decodeJwtExp(accessToken);
+  const expiresSoon = exp !== null && exp <= Math.floor(Date.now() / 1000) + accessRefreshSkewSeconds;
+  if (expiresSoon && await refreshSession()) return token();
+  return accessToken;
 }
 
 async function request<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
@@ -105,8 +145,8 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
   }
 
   const headers = new Headers(init.headers);
-  headers.set('Content-Type', 'application/json');
-  const accessToken = await token();
+  if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  const accessToken = await validAccessToken();
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
@@ -127,6 +167,7 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
 
   if (!response.ok) {
     if (response.status === 401 && retry && await refreshSession()) return request<T>(path, init, false);
+    if (response.status === 401) await clearTokens();
     throw new ApiError(response.status, await responseErrorMessage(response));
   }
   if (response.status === 204) return undefined as T;
@@ -136,11 +177,12 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
 async function requestText(path: string, init: RequestInit = {}, retry = true): Promise<string> {
   if (!configuredUrl) throw new ApiError(0, 'Backend API URL is not configured for this build.');
   const headers = new Headers(init.headers);
-  const accessToken = await token();
+  const accessToken = await validAccessToken();
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
   const response = await fetch(`${configuredUrl}${path}`, { ...init, headers });
   if (!response.ok) {
     if (response.status === 401 && retry && await refreshSession()) return requestText(path, init, false);
+    if (response.status === 401) await clearTokens();
     throw new ApiError(response.status, await responseErrorMessage(response));
   }
   return response.text();
@@ -175,6 +217,7 @@ export const api = {
   requestFriend: (username: string) => request('/friends/request', { method: 'POST', body: JSON.stringify({ username }) }),
   acceptFriend: (id: string) => request(`/friends/requests/${id}/accept`, { method: 'POST' }),
   denyFriend: (id: string) => request(`/friends/requests/${id}/deny`, { method: 'POST' }),
+  cancelFriendRequest: (id: string) => request(`/friends/requests/${id}`, { method: 'DELETE' }),
   removeFriend: (id: string) => request(`/friends/${id}`, { method: 'DELETE' }),
   friendAction: (id: string, action: 'mute' | 'unmute' | 'block') =>
     request(`/friends/${id}/${action}`, { method: 'POST' }),
