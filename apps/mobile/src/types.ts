@@ -15,7 +15,8 @@ export type User = {
   previousAvatars?: string[];
   previousBanners?: string[];
   profileColor: string;
-  profileTheme?: 'terria' | 'ember' | 'ocean' | 'mono';
+  profileTheme?: 'terria' | 'ember' | 'ocean' | 'mono' | 'midnight' | 'forest' | 'rose' | 'graphite';
+  language?: string;
   bio: string;
   pronouns?: string;
   customStatus?: string;
@@ -52,6 +53,10 @@ export type Group = {
   name: string;
   description: string;
   ownerId: string;
+  visibility?: 'private' | 'public';
+  inviteCode?: string;
+  voiceLimit?: number;
+  videoLimit?: number;
   avatarUrl?: string;
   bannerUrl?: string;
   slowmodeSeconds: number;
@@ -144,4 +149,29 @@ export type DashboardStats = {
   systemHealth: number;
   announcements?: number;
   blogs?: number;
+  activeUsers?: number;
+  errors?: number;
+  altUsers?: number;
+  invites?: number;
+};
+
+export type BadgeDefinition = {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+};
+
+export type RoleDefinition = {
+  id: 'user' | 'staff' | 'admin';
+  name: string;
+  permissions: string[];
+};
+
+export type AppUpdate = {
+  version: string;
+  title: string;
+  notes: string;
+  apkUrl?: string;
+  required?: boolean;
 };

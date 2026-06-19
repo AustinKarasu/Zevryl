@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
-import type { Announcement, BlogPost, Conversation, DashboardStats, FriendState, Group, Message, Report, Ticket, User } from './types';
+import type { Announcement, AppUpdate, BadgeDefinition, BlogPost, Conversation, DashboardStats, FriendState, Group, Message, Report, RoleDefinition, Ticket, User } from './types';
 
 const configuredUrl = normalizeApiUrl(
   process.env.EXPO_PUBLIC_API_URL ||
@@ -102,7 +102,7 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   me: () => request<User>('/me'),
-  updateProfile: (payload: Partial<Pick<User, 'displayName' | 'bio' | 'pronouns' | 'customStatus' | 'profileColor' | 'profileTheme' | 'avatarUrl' | 'bannerUrl' | 'presence'>>) =>
+  updateProfile: (payload: Partial<Pick<User, 'displayName' | 'bio' | 'pronouns' | 'customStatus' | 'profileColor' | 'profileTheme' | 'avatarUrl' | 'bannerUrl' | 'presence' | 'language'>>) =>
     request<User>('/me/profile', { method: 'PATCH', body: JSON.stringify(payload) }),
   updateAccount: (payload: { username?: string; discriminator?: string; mobile?: string; alternateEmail?: string }) =>
     request<User>('/me/account', { method: 'PATCH', body: JSON.stringify(payload) }),
@@ -118,9 +118,14 @@ export const api = {
   acceptFriend: (id: string) => request(`/friends/requests/${id}/accept`, { method: 'POST' }),
   denyFriend: (id: string) => request(`/friends/requests/${id}/deny`, { method: 'POST' }),
   removeFriend: (id: string) => request(`/friends/${id}`, { method: 'DELETE' }),
+  friendAction: (id: string, action: 'mute' | 'unmute' | 'block') =>
+    request(`/friends/${id}/${action}`, { method: 'POST' }),
   groups: () => request<Group[]>('/groups'),
-  createGroup: (payload: { name: string; description: string; friendIds: string[] }) =>
+  createGroup: (payload: { name: string; description: string; friendIds: string[]; visibility?: 'private' | 'public'; voiceLimit?: number; videoLimit?: number }) =>
     request<Group>('/groups', { method: 'POST', body: JSON.stringify(payload) }),
+  groupInvite: (id: string) => request<{ inviteCode: string; inviteUrl: string }>(`/groups/${id}/invite`, { method: 'POST' }),
+  joinGroupInvite: (inviteCode: string) => request<Group>(`/groups/invites/${inviteCode}/join`, { method: 'POST' }),
+  deleteGroup: (id: string, confirmName: string) => request(`/groups/${id}`, { method: 'DELETE', body: JSON.stringify({ confirmName }) }),
   latestAnnouncement: () => request<Announcement | null>('/announcements/latest'),
   announcements: () => request<Announcement[]>('/announcements'),
   markAnnouncementRead: (id: string) => request(`/announcements/${id}/read`, { method: 'POST' }),
@@ -149,6 +154,7 @@ export const api = {
     body: JSON.stringify({ roomName, canPublish: true, canSubscribe: true })
   }),
   registerPushToken: (token: string, platform: string) => request('/notifications/register', { method: 'POST', body: JSON.stringify({ token, platform }) }),
+  latestUpdate: () => request<AppUpdate>('/app/latest'),
   downloadConversation: (conversationId: string) => requestText(`/conversations/${conversationId}/download`),
   updateTicket: (id: string, payload: { status?: Ticket['status']; note?: string; action?: 'claim' | 'close' | 'reopen' | 'delete' | 'ban' }) =>
     request<Ticket>(`/tickets/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
@@ -164,8 +170,16 @@ export const api = {
   deleteBlog: (id: string) => request(`/admin/blogs/${id}`, { method: 'DELETE' }),
   grantBadge: (payload: { username: string; badge: string }) =>
     request<User>('/admin/badges/grant', { method: 'POST', body: JSON.stringify(payload) }),
+  badgeCatalog: () => request<BadgeDefinition[]>('/admin/badges'),
+  createBadge: (payload: { name: string; icon: string; color: string }) =>
+    request<BadgeDefinition>('/admin/badges', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteBadge: (id: string) => request(`/admin/badges/${id}`, { method: 'DELETE' }),
+  roles: () => request<RoleDefinition[]>('/admin/roles'),
   setRole: (payload: { username: string; role: User['role'] }) =>
     request<User>('/admin/users/role', { method: 'POST', body: JSON.stringify(payload) }),
+  searchUsers: (q: string) => request<User[]>(`/admin/users/search?q=${encodeURIComponent(q)}`),
+  moderateUser: (payload: { userId: string; action: 'mute' | 'ban' | 'unban'; reason?: string; hours?: number }) =>
+    request('/admin/users/moderate', { method: 'POST', body: JSON.stringify(payload) }),
   updateUser: (payload: { username: string; newUsername?: string; discriminator?: string; mobile?: string; alternateEmail?: string; resetUsernameLimit?: boolean }) =>
     request<User>('/admin/users/update', { method: 'POST', body: JSON.stringify(payload) }),
   exportUsers: () => requestText('/admin/users/export'),

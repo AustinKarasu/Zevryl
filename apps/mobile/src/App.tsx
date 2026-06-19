@@ -6,6 +6,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Notifications from 'expo-notifications';
+import * as SecureStore from 'expo-secure-store';
 import * as Sharing from 'expo-sharing';
 import * as Clipboard from 'expo-clipboard';
 import { StatusBar } from 'expo-status-bar';
@@ -30,6 +31,8 @@ import { api, clearTokens, setTokens } from './api';
 import type {
   Announcement,
   AppTab,
+  AppUpdate,
+  BadgeDefinition,
   BlogPost,
   Conversation,
   DashboardStats,
@@ -37,6 +40,7 @@ import type {
   Group,
   Message,
   Report,
+  RoleDefinition,
   Ticket,
   User
 } from './types';
@@ -44,13 +48,23 @@ import type {
 const logo = require('../assets/zevryl-logo.png');
 const wordmark = require('../assets/zevryl-wordmark.png');
 
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+    shouldShowBanner: true,
+    shouldShowList: true
+  })
+});
+
 type Loadable<T> = { loading: boolean; data: T; error?: string };
 type NoticeTone = 'error' | 'success' | 'info';
 type Notice = { tone: NoticeTone; text: string } | null;
 
 const emptyFriends: FriendState = { friends: [], incoming: [], outgoing: [], blocked: [] };
 const emptyStats: DashboardStats = { users: 0, reports: 0, activeGroups: 0, systemHealth: 0, announcements: 0, blogs: 0 };
-const emojis = ['😀', '🔥', '✅', '💬', '⭐', '🛡️', '🌿', '⚒️'];
+const emojis = ['😀', '😁', '😂', '🤣', '😊', '😍', '😎', '😢', '😡', '👍', '🙏', '👏', '🔥', '✅', '💬', '⭐', '🛡️', '🌿', '⚒️', '🎉', '❤️', '💯', '👀', '📌', '🚀', '🎮', '🏆', '⚡'];
 const badgeIcons: Record<string, keyof typeof Ionicons.glyphMap> = {
   Founder: 'diamond',
   Admin: 'shield-checkmark',
@@ -73,7 +87,11 @@ const profileThemes: Record<NonNullable<User['profileTheme']>, { label: string; 
   terria: { label: 'Terria', color: '#7D8B58', colors: ['#111712', '#19221A', '#2A2118'] },
   ember: { label: 'Ember', color: '#B86B4A', colors: ['#171111', '#261917', '#342018'] },
   ocean: { label: 'Ocean', color: '#4B7C8C', colors: ['#101518', '#15232A', '#172D34'] },
-  mono: { label: 'Mono', color: '#AEB8A5', colors: ['#111111', '#1C1C1C', '#282828'] }
+  mono: { label: 'Mono', color: '#AEB8A5', colors: ['#111111', '#1C1C1C', '#282828'] },
+  midnight: { label: 'Midnight', color: '#5870A8', colors: ['#080B10', '#121827', '#1A2234'] },
+  forest: { label: 'Forest', color: '#4E7D5A', colors: ['#0B120D', '#142219', '#1D3023'] },
+  rose: { label: 'Rose', color: '#B66A7A', colors: ['#160D11', '#24151B', '#301C24'] },
+  graphite: { label: 'Graphite', color: '#8B9188', colors: ['#0E0F0E', '#191B19', '#242824'] }
 };
 const colorChoices = [
   '#EF4444', '#F97316', '#F59E0B', '#EAB308', '#84CC16', '#22C55E',
@@ -81,11 +99,28 @@ const colorChoices = [
   '#A855F7', '#D946EF', '#EC4899', '#F43F5E', '#58764A', '#7B6F45',
   '#8C5E3C', '#4B6D78', '#AEB8A5', '#F4F0E6', '#111712', '#000000'
 ];
+const densityChoices = {
+  compact: { label: 'Compact', scale: 0.82 },
+  comfortable: { label: 'Comfortable', scale: 1 },
+  spacious: { label: 'Spacious', scale: 1.18 }
+};
 const gifs = [
   'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExb2d4MzgzdTBqOWc3eGxxZGNzYnRydjF0dDhtczlmbzhmOWUwajU2MiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/111ebonMs90YLu/giphy.gif',
   'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExZmRnOWlzZ2l3enV4Mmpyc2t6Zm82dzV5N2Vzd3NlNXQ2Ynpmb3pyNCZlcD12MV9naWZzX3NlYXJjaCZjdD1n/l0HlNaQ6gWfllcjDO/giphy.gif',
-  'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExYnV3d2VudnV3enVscnE2djZxa2U5bXF0OWM1eXo0d3hnMHU3bHVqNCZlcD12MV9naWZzX3NlYXJjaCZjdD1n/26ufdipQqU2lhNA4g/giphy.gif'
+  'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExYnV3d2VudnV3enVscnE2djZxa2U5bXF0OWM1eXo0d3hnMHU3bHVqNCZlcD12MV9naWZzX3NlYXJjaCZjdD1n/26ufdipQqU2lhNA4g/giphy.gif',
+  'https://media.giphy.com/media/3o7TKtnuHOHHUjR38Y/giphy.gif',
+  'https://media.giphy.com/media/5GoVLqeAOo6PK/giphy.gif',
+  'https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif',
+  'https://media.giphy.com/media/ely3apij36BJhoZ234/giphy.gif',
+  'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif',
+  'https://media.giphy.com/media/3oz8xIsloV7zOmt81G/giphy.gif',
+  'https://media.giphy.com/media/26tOZ42Mg6pbTUPHW/giphy.gif'
 ];
+const languages = [
+  ['en', 'English'], ['hi', 'Hindi'], ['bn', 'Bengali'], ['ta', 'Tamil'], ['te', 'Telugu'], ['mr', 'Marathi'], ['gu', 'Gujarati'], ['kn', 'Kannada'], ['ml', 'Malayalam'], ['pa', 'Punjabi'],
+  ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['it', 'Italian'], ['pt', 'Portuguese'], ['ru', 'Russian'], ['ar', 'Arabic'], ['zh', 'Chinese'], ['ja', 'Japanese'], ['ko', 'Korean'],
+  ['id', 'Indonesian'], ['tr', 'Turkish'], ['vi', 'Vietnamese'], ['th', 'Thai'], ['nl', 'Dutch'], ['pl', 'Polish'], ['uk', 'Ukrainian'], ['ur', 'Urdu'], ['fa', 'Persian'], ['sw', 'Swahili']
+] as const;
 
 export default function App() {
   return (
@@ -102,7 +137,10 @@ function Root() {
   const [tab, setTab] = useState<AppTab>('home');
   const [announcement, setAnnouncement] = useState<Announcement | null>(null);
   const [showAnnouncement, setShowAnnouncement] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<AppUpdate | null>(null);
+  const [showUpdate, setShowUpdate] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
+  const [pendingConversationId, setPendingConversationId] = useState<string | undefined>();
   const insets = useSafeAreaInsets();
 
   const showNotice = (tone: NoticeTone, text: string) => {
@@ -122,12 +160,38 @@ function Root() {
   }, []);
 
   useEffect(() => {
+    api.latestUpdate()
+      .then(update => {
+        if (!update?.version || update.version === '0.1.18') return;
+        const key = `zevryl.update.seen.${update.version}`;
+        SecureStore.getItemAsync(key).then(seen => {
+          if (!seen) {
+            setUpdateInfo(update);
+            setShowUpdate(true);
+          }
+        });
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
     if (!user || !Device.isDevice) return;
     Notifications.requestPermissionsAsync()
       .then((result: any) => result.granted || result.status === 'granted' ? Notifications.getExpoPushTokenAsync() : null)
       .then(tokenResult => tokenResult?.data ? api.registerPushToken(tokenResult.data, Platform.OS) : null)
       .catch(() => undefined);
   }, [user?.id]);
+
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener(response => {
+      const conversationId = response.notification.request.content.data?.conversationId;
+      if (typeof conversationId === 'string') {
+        setPendingConversationId(conversationId);
+        setTab('chats');
+      }
+    });
+    return () => subscription.remove();
+  }, []);
 
   async function completeAuth(nextUser: User, accessToken: string, refreshToken: string) {
     await setTokens(accessToken, refreshToken);
@@ -151,7 +215,8 @@ function Root() {
             setAnnouncement,
             setShowAnnouncement,
             setTab,
-            notify: showNotice
+            notify: showNotice,
+            pendingConversationId
           })}
         </View>
         <NoticeFooter notice={notice} bottom={insets.bottom + 94} />
@@ -164,6 +229,10 @@ function Root() {
             if (announcement) await api.markAnnouncementRead(announcement.id).catch(() => undefined);
           }}
         />
+        <UpdateModal update={updateInfo} visible={showUpdate} onClose={async () => {
+          if (updateInfo?.version) await SecureStore.setItemAsync(`zevryl.update.seen.${updateInfo.version}`, '1');
+          setShowUpdate(false);
+        }} />
       </SafeAreaView>
     </TerraShell>
   );
@@ -178,14 +247,15 @@ function renderTab(
     setShowAnnouncement: (v: boolean) => void;
     setTab: (tab: AppTab) => void;
     notify: (tone: 'error' | 'success' | 'info', text: string) => void;
+    pendingConversationId?: string;
   }
 ) {
   if (tab === 'admin' && user.role !== 'admin') return <LockedScreen title="Admin only" />;
   if (tab === 'staff' && user.role !== 'staff' && user.role !== 'admin') return <LockedScreen title="Staff only" />;
-  if (tab === 'home') return <HomeScreen user={user} notify={tools.notify} />;
+  if (tab === 'home') return <HomeScreen user={user} notify={tools.notify} setTab={tools.setTab} />;
   if (tab === 'friends') return <FriendsScreen notify={tools.notify} setTab={tools.setTab} />;
-  if (tab === 'groups') return <GroupsScreen notify={tools.notify} />;
-  if (tab === 'chats') return <ChatScreen user={user} notify={tools.notify} />;
+  if (tab === 'groups') return <GroupsScreen user={user} notify={tools.notify} />;
+  if (tab === 'chats') return <ChatScreen user={user} notify={tools.notify} initialConversationId={tools.pendingConversationId} />;
   if (tab === 'profile') return <ProfileScreen user={user} setUser={tools.setUser} notify={tools.notify} />;
   if (tab === 'settings') return <SettingsScreen user={user} setTab={tools.setTab} setUser={tools.setUser} notify={tools.notify} />;
   if (tab === 'tickets') return <TicketScreen user={user} notify={tools.notify} />;
@@ -288,10 +358,11 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
   );
 }
 
-function HomeScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
+function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void; setTab: (tab: AppTab) => void }) {
   const [announcements, setAnnouncements] = useState<Loadable<Announcement[]>>({ loading: true, data: [] });
   const [blogs, setBlogs] = useState<Loadable<BlogPost[]>>({ loading: true, data: [] });
   const [view, setView] = useState<'updates' | 'support'>('updates');
+  const [supportMessage, setSupportMessage] = useState('');
 
   const load = () => {
     Promise.all([api.announcements(), api.blogs()])
@@ -311,8 +382,8 @@ function HomeScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.homeHeader}>
         <View>
-          <Text style={styles.kicker}>Terria Network</Text>
-          <Text style={styles.hero}>Home</Text>
+          <Text style={styles.hero}>Welcome back</Text>
+          <Text style={styles.heroSub}>Messages, groups, tickets, and official updates in one clean workspace.</Text>
         </View>
         <StatusPill presence={user.presence} />
       </View>
@@ -322,9 +393,27 @@ function HomeScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
       </View>
       {view === 'support' ? (
         <>
-          <FeatureCard title="Need help?" body="Use staff reports for safety issues, or DM a staff member when available." icon="help-circle" />
-          <FeatureCard title="Account recovery" body="Forgot password accepts recovery requests. Staff can review support cases from the dashboard." icon="key" />
-          <FeatureCard title="Community safety" body="Reports, badges, roles, and announcements are managed through role-gated tools." icon="shield-checkmark" />
+          <GlassCard>
+            <Text style={styles.cardTitle}>Support Center</Text>
+            <Text style={styles.muted}>Get help with your account, messages, groups, calls, reports, or app bugs.</Text>
+            <View style={styles.ticketActions}>
+              <SecondaryButton label="Open Tickets" icon="ticket" onPress={() => setTab('tickets')} />
+              <SecondaryButton label="Report a Bug" icon="bug" onPress={() => setSupportMessage('I found a bug: ')} />
+            </View>
+          </GlassCard>
+          <GlassCard>
+            <Text style={styles.cardTitle}>Quick Help</Text>
+            <Field icon="chatbubble" placeholder="Tell support what happened" value={supportMessage} onChangeText={setSupportMessage} multiline />
+            <PrimaryButton label="Send Support Ticket" icon="send" onPress={() => {
+              if (!supportMessage.trim()) return notify('error', 'Write a short message first.');
+              api.createTicket({ type: 'support', subject: 'Support request', body: supportMessage })
+                .then(() => { setSupportMessage(''); notify('success', 'Support ticket sent.'); })
+                .catch(error => notify('error', error.message));
+            }} />
+          </GlassCard>
+          <FeatureCard title="Account help" body="Use password recovery if you cannot sign in. Support can review recovery tickets from the ticket center." icon="key" />
+          <FeatureCard title="Safety help" body="Report users, messages, groups, or media. Staff can reply in the same ticket." icon="shield-checkmark" />
+          <FeatureCard title="Calls and notifications" body="Allow microphone, camera, and notification permissions when Android asks. You can change these in phone settings." icon="notifications" />
         </>
       ) : (
         <>
@@ -363,6 +452,20 @@ function FriendsScreen({ notify, setTab }: { notify: (tone: 'error' | 'success' 
     load();
   }
 
+  function confirmRemove(friend: User) {
+    Alert.alert('Remove friend?', `${friend.displayName} will be removed from your friends list.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: () => void action(api.removeFriend(friend.id), 'Friend removed.') }
+    ]);
+  }
+
+  async function friendControl(friend: User, control: 'mute' | 'unmute' | 'block') {
+    await api.friendAction(friend.id, control)
+      .then(() => notify('success', control === 'block' ? 'Friend blocked.' : control === 'mute' ? 'Friend muted.' : 'Friend unmuted.'))
+      .catch(error => notify('error', error.message));
+    load();
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <SectionTitle title="Friends" action="Refresh" onPress={load} />
@@ -372,12 +475,15 @@ function FriendsScreen({ notify, setTab }: { notify: (tone: 'error' | 'success' 
         <PrimaryButton label="Send Request" icon="send" onPress={() => username ? action(api.requestFriend(username), 'Friend request sent.') : notify('error', 'Enter a username tag first.')} />
       </GlassCard>
       {state.loading ? <LoadingState /> : state.error ? <ErrorState message={state.error} onRetry={load} /> : null}
-      <UserList title="Direct Messages" users={state.data.friends} empty="Add a friend to start a DM." right={(friend) => (
+      <UserList title="Friends" users={state.data.friends} empty="Add a friend to start a DM." right={(friend) => (
         <View style={styles.rowActions}>
           <IconButton icon="chatbubble" onPress={async () => {
             await api.createDm(friend.id).then(() => { notify('success', `DM ready with ${friend.displayName}.`); setTab('chats'); }).catch(error => notify('error', error.message));
           }} />
-          <IconButton icon="close" onPress={() => action(api.removeFriend(friend.id), 'Friend removed.')} />
+          <IconButton icon="notifications-off" onPress={() => friendControl(friend, 'mute')} />
+          <IconButton icon="volume-high" onPress={() => friendControl(friend, 'unmute')} />
+          <IconButton icon="ban" onPress={() => friendControl(friend, 'block')} />
+          <IconButton icon="close" onPress={() => confirmRemove(friend)} />
         </View>
       )} />
       <RequestList title="Incoming Requests" requests={state.data.incoming} accept={id => action(api.acceptFriend(id), 'Request accepted.')} deny={id => action(api.denyFriend(id), 'Request denied.')} />
@@ -386,12 +492,18 @@ function FriendsScreen({ notify, setTab }: { notify: (tone: 'error' | 'success' 
   );
 }
 
-function GroupsScreen({ notify }: { notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
+function GroupsScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
   const [groups, setGroups] = useState<Loadable<Group[]>>({ loading: true, data: [] });
   const [friends, setFriends] = useState<FriendState>(emptyFriends);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [selected, setSelected] = useState<string[]>([]);
+  const [visibility, setVisibility] = useState<'private' | 'public'>('private');
+  const [showCreate, setShowCreate] = useState(false);
+  const [voiceLimit, setVoiceLimit] = useState('25');
+  const [videoLimit, setVideoLimit] = useState('10');
+  const [deleteTarget, setDeleteTarget] = useState<Group | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
 
   const load = () => Promise.all([api.groups(), api.friends()])
     .then(([groupData, friendData]) => { setGroups({ loading: false, data: groupData }); setFriends(friendData); })
@@ -401,8 +513,16 @@ function GroupsScreen({ notify }: { notify: (tone: 'error' | 'success' | 'info',
   async function create() {
     if (!name.trim()) return notify('error', 'Group name required.');
     if (selected.length < 1) return notify('error', 'Select at least one friend.');
-    await api.createGroup({ name, description, friendIds: selected })
-      .then(() => { setName(''); setDescription(''); setSelected([]); notify('success', 'Group created.'); load(); })
+    await api.createGroup({ name, description, friendIds: selected, visibility, voiceLimit: Number(voiceLimit) || 25, videoLimit: Number(videoLimit) || 10 })
+      .then(() => { setName(''); setDescription(''); setSelected([]); setShowCreate(false); notify('success', 'Group created.'); load(); })
+      .catch(error => notify('error', error.message));
+  }
+
+  async function deleteGroup() {
+    if (!deleteTarget) return;
+    if (deleteConfirm !== deleteTarget.name) return notify('error', 'Type the group name exactly to delete it.');
+    await api.deleteGroup(deleteTarget.id, deleteConfirm)
+      .then(() => { setDeleteTarget(null); setDeleteConfirm(''); notify('success', 'Group deleted.'); load(); })
       .catch(error => notify('error', error.message));
   }
   async function ticketAction(ticket: Ticket, action: 'close' | 'reopen') {
@@ -418,25 +538,52 @@ function GroupsScreen({ notify }: { notify: (tone: 'error' | 'success' | 'info',
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
-      <SectionTitle title="Groups" action="Refresh" onPress={load} />
+      <View style={styles.sectionTitle}>
+        <Text style={styles.heroSmall}>Groups</Text>
+        <View style={styles.rowActions}>
+          <IconButton icon="refresh" onPress={load} />
+          <IconButton icon="add" onPress={() => setShowCreate(true)} />
+        </View>
+      </View>
       {groups.loading ? <LoadingState /> : groups.error ? <ErrorState message={groups.error} onRetry={load} /> : groups.data.map(group => (
-        <GlassCard key={group.id} style={styles.listCard}><Text style={styles.cardTitle}>{group.name}</Text><Text style={styles.muted}>{group.description || 'No description yet.'}</Text><Text style={styles.badge}>{group.memberCount} members · {group.unreadCount} unread</Text></GlassCard>
+        <GlassCard key={group.id} style={styles.listCard}><Text style={styles.cardTitle}>{group.name}</Text><Text style={styles.muted}>{group.description || 'No description yet.'}</Text><Text style={styles.badge}>{group.visibility === 'public' ? 'Public' : 'Private'} - {group.memberCount} members - voice {group.voiceLimit ?? 25} - video {group.videoLimit ?? 10}</Text><View style={styles.ticketActions}><SecondaryButton label="Open Chat" icon="chatbubbles" onPress={() => notify('info', 'Open Messages and choose this group conversation.')} /><SecondaryButton label="Invite" icon="link" onPress={() => api.groupInvite(group.id).then(invite => Clipboard.setStringAsync(invite.inviteUrl).then(() => notify('success', 'Invite link copied.'))).catch(error => notify('error', error.message))} />{group.ownerId === user.id ? <SecondaryButton label="Delete" icon="trash" onPress={() => setDeleteTarget(group)} /> : null}</View></GlassCard>
       ))}
       {groups.data.length === 0 && !groups.loading && <EmptyState title="No groups yet" body="Create a group after adding at least one friend." />}
-      <GlassCard>
-        <Text style={styles.cardTitle}>Create Group</Text>
-        <Field icon="people" placeholder="Group name" value={name} onChangeText={setName} />
-        <Field icon="document-text" placeholder="Description" value={description} onChangeText={setDescription} />
-        <Text style={styles.label}>Select Friends</Text>
-        {friends.friends.map(friend => <Pressable key={friend.id} style={styles.memberPick} onPress={() => setSelected(prev => prev.includes(friend.id) ? prev.filter(id => id !== friend.id) : [...prev, friend.id])}><Text style={styles.body}>{friend.displayName}</Text><Ionicons name={selected.includes(friend.id) ? 'radio-button-on' : 'radio-button-off'} size={22} color="#CDA16A" /></Pressable>)}
-        {friends.friends.length === 0 && <Text style={styles.muted}>Add at least one friend before creating a group.</Text>}
-        <PrimaryButton label="Create Group" icon="add" onPress={create} />
-      </GlassCard>
+      <Modal visible={showCreate} transparent animationType="slide">
+        <View style={styles.sheetBackdrop}>
+          <View style={styles.editorPanel}>
+            <View style={styles.editorHeader}><Text style={[styles.cardTitle, { flex: 1 }]}>Create Group</Text><IconButton icon="close" onPress={() => setShowCreate(false)} /></View>
+            <Field icon="people" placeholder="Group name" value={name} onChangeText={setName} />
+            <Field icon="document-text" placeholder="Description" value={description} onChangeText={setDescription} />
+            <View style={styles.segment}>{(['private', 'public'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, visibility === item && styles.segmentActive]} onPress={() => setVisibility(item)}><Text style={styles.segmentText}>{item === 'private' ? 'Private' : 'Public'}</Text></Pressable>)}</View>
+            <Text style={styles.muted}>{visibility === 'private' ? 'Only owner-approved members and invite links can enter.' : 'Anyone with the invite link can join.'}</Text>
+            <View style={styles.statsGrid}>
+              <Field icon="call" placeholder="Voice limit" value={voiceLimit} onChangeText={setVoiceLimit} keyboardType="number-pad" />
+              <Field icon="videocam" placeholder="Video limit" value={videoLimit} onChangeText={setVideoLimit} keyboardType="number-pad" />
+            </View>
+            <Text style={styles.label}>Select Friends</Text>
+            <ScrollView style={{ maxHeight: 220 }}>{friends.friends.map(friend => <Pressable key={friend.id} style={styles.memberPick} onPress={() => setSelected(prev => prev.includes(friend.id) ? prev.filter(id => id !== friend.id) : [...prev, friend.id])}><Text style={styles.body}>{friend.displayName}</Text><Ionicons name={selected.includes(friend.id) ? 'radio-button-on' : 'radio-button-off'} size={22} color="#CDA16A" /></Pressable>)}</ScrollView>
+            {friends.friends.length === 0 && <Text style={styles.muted}>Add at least one friend before creating a group.</Text>}
+            <PrimaryButton label="Create Group" icon="add" onPress={create} />
+          </View>
+        </View>
+      </Modal>
+      <Modal visible={Boolean(deleteTarget)} transparent animationType="fade">
+        <View style={styles.modalBackdrop}>
+          <View style={styles.announcementModal}>
+            <Text style={styles.cardTitle}>Delete group</Text>
+            <Text style={styles.muted}>Only the owner can delete this group. Type {deleteTarget?.name} to confirm.</Text>
+            <Field icon="trash" placeholder="Group name" value={deleteConfirm} onChangeText={setDeleteConfirm} />
+            <PrimaryButton label="Delete Group" icon="trash" onPress={deleteGroup} />
+            <SecondaryButton label="Cancel" icon="close" onPress={() => { setDeleteTarget(null); setDeleteConfirm(''); }} />
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
 
-function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
+function ChatScreen({ user, notify, initialConversationId }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void; initialConversationId?: string }) {
   const [conversations, setConversations] = useState<Loadable<Conversation[]>>({ loading: true, data: [] });
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -455,7 +602,10 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
   const loadConversations = () => api.conversations()
     .then(data => {
       setConversations({ loading: false, data });
-      if (!selected && data[0]) setSelected(data[0]);
+      if (initialConversationId) {
+        const next = data.find(item => item.id === initialConversationId);
+        if (next) setSelected(next);
+      }
     })
     .catch(error => { setConversations({ loading: false, data: [], error: error.message }); notify('error', error.message); });
   useEffect(() => { loadConversations(); }, []);
@@ -470,6 +620,11 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
   }, [messages.length, selected?.id]);
 
   const refreshMessages = () => selected && api.messages(selected.id, { q: search, pinned: pinnedOnly }).then(setMessages).catch(error => notify('error', error.message));
+  const pinnedMessage = messages.find(message => message.pinned);
+  function openTray(tray: 'emoji' | 'gif') {
+    setShowEmoji(tray === 'emoji' ? value => !value : false);
+    setShowGif(tray === 'gif' ? value => !value : false);
+  }
 
   async function send(payload?: { type?: Message['type']; attachmentUrl?: string; body?: string }) {
     if (!selected) return notify('error', 'Open a DM first.');
@@ -487,6 +642,8 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
 
   async function pickChatImage(camera = false) {
     if (!selected) return notify('error', 'Open a DM first.');
+    setShowEmoji(false);
+    setShowGif(false);
     const permission = camera ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) return notify('error', camera ? 'Camera permission is required.' : 'Gallery permission is required.');
     const result = camera
@@ -547,7 +704,7 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
   async function startCall(kind: 'voice' | 'video') {
     if (!selected) return;
     await api.callToken(`${kind}-${selected.id}`)
-      .then(() => notify('success', `${kind === 'voice' ? 'Voice' : 'Video'} room is ready. LiveKit UI module is required for media rendering.`))
+      .then(result => notify('success', `${kind === 'voice' ? 'Voice' : 'Video'} room ready: ${result.roomName}. ${selected.participants.length} member${selected.participants.length === 1 ? '' : 's'} in this conversation.`))
       .catch(error => notify('error', error.message));
   }
 
@@ -577,7 +734,7 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
             <IconButton icon="chevron-back" onPress={() => setSelected(null)} />
             <View style={styles.flex}>
               <Text style={styles.cardTitle}>{selected.title}</Text>
-              <Text style={styles.meta}>Private DM</Text>
+              <Text style={styles.meta}>{selected.kind === 'group' ? `${selected.participants.length} members` : 'Private DM'}</Text>
             </View>
             <IconButton icon="call" onPress={() => startCall('voice')} />
             <IconButton icon="videocam" onPress={() => startCall('video')} />
@@ -588,6 +745,7 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
             <IconButton icon="search" onPress={refreshMessages} />
             <IconButton icon={pinnedOnly ? 'pin' : 'pin-outline'} onPress={() => setPinnedOnly(prev => !prev)} />
           </View>
+          {pinnedMessage ? <Pressable style={styles.pinnedBar} onPress={() => setPinnedOnly(true)}><Ionicons name="pin" size={15} color="#E6C07A" /><Text style={styles.pinnedText} numberOfLines={1}>Pinned message: {pinnedMessage.body || pinnedMessage.attachmentUrl}</Text></Pressable> : null}
           <ScrollView ref={messageScrollRef} contentContainerStyle={styles.messageList} keyboardShouldPersistTaps="handled" onContentSizeChange={() => messageScrollRef.current?.scrollToEnd({ animated: true })}>
             {messages.length === 0 ? <EmptyState title="No messages" body="Send the first message, emoji, sticker, GIF, or image." /> : messages.map(message => {
               const author = selected.participants.find(p => p.id === message.senderId) || user;
@@ -606,8 +764,8 @@ function ChatScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'su
           {showEmoji && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search emoji or use your keyboard for all emoji" placeholderTextColor="#899486" value={emojiSearch} onChangeText={setEmojiSearch} /> <View style={styles.pickerRow}>{emojiChoices.map(item => <Pressable key={item} style={styles.pickerButton} onPress={() => setBody(prev => `${prev}${item}`)}><Text style={styles.emojiText}>{item}</Text></Pressable>)}</View></View>}
           {showGif && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search GIFs" placeholderTextColor="#899486" value={gifSearch} onChangeText={setGifSearch} /><View style={styles.gifPicker}>{gifChoices.map(item => <Pressable key={item} onPress={() => send({ type: 'gif', attachmentUrl: item, body: 'GIF' })}><Image source={{ uri: item }} style={styles.gifThumb} /></Pressable>)}</View></View>}
           <View style={styles.composer}>
-            <IconButton icon="happy" onPress={() => { setShowEmoji(prev => !prev); setShowGif(false); }} />
-            <IconButton icon="film" onPress={() => { setShowGif(prev => !prev); setShowEmoji(false); }} />
+            <IconButton icon="happy" onPress={() => openTray('emoji')} />
+            <IconButton icon="film" onPress={() => openTray('gif')} />
             <IconButton icon="attach" onPress={() => Alert.alert('Upload', 'Choose media source', [{ text: 'Photo Library', onPress: () => pickChatImage(false) }, { text: 'Camera', onPress: () => pickChatImage(true) }, { text: 'Cancel', style: 'cancel' }])} />
             <TextInput style={styles.composerInput} placeholder="Message" placeholderTextColor="#899486" value={body} onChangeText={setBody} multiline />
             <IconButton icon="send" onPress={() => send()} />
@@ -877,7 +1035,7 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
 }
 
 function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab: (tab: AppTab) => void; setUser: (user: User | null) => void; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
-  const [panel, setPanel] = useState<'account' | 'privacy' | 'devices' | 'appearance' | 'voice' | 'security' | null>(null);
+  const [panel, setPanel] = useState<'account' | 'privacy' | 'devices' | 'appearance' | 'language' | 'voice' | 'security' | null>(null);
   const [twoFactor, setTwoFactor] = useState<{ secret: string; qrUrl: string } | null>(null);
   const [twoFactorCode, setTwoFactorCode] = useState('');
   const [biometricEnabled, setBiometricEnabled] = useState(false);
@@ -975,7 +1133,7 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
             </GlassCard>
             <GlassCard>
               <Text style={styles.cardTitle}>Biometric Login</Text>
-              <Text style={[styles.muted, { marginTop: 8 }]}>Use this device's enrolled biometrics to unlock the app locally.</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Use your phone's face or fingerprint lock for faster sign in.</Text>
               <PrimaryButton label={biometricEnabled ? 'Disable Biometrics' : 'Enable Biometrics'} icon="finger-print" onPress={toggleBiometrics} />
             </GlassCard>
           </>
@@ -1001,7 +1159,7 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
             </GlassCard>
             <GlassCard>
               <Text style={styles.cardTitle}>Session Management</Text>
-              <Text style={[styles.muted, { marginTop: 8 }]}>Future updates will allow you to view and manage all active devices and sessions here.</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Review this phone, login time, and session safety from your account.</Text>
               <PrimaryButton label="Log Out All Devices" icon="power" onPress={() => {
                 Alert.alert('Log Out All Devices', 'This will sign you out on all devices. Continue?', [
                   { text: 'Cancel', onPress: () => {}, style: 'cancel' },
@@ -1026,10 +1184,24 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
             </GlassCard>
             <GlassCard>
               <Text style={styles.cardTitle}>Density</Text>
-              <Text style={[styles.muted, { marginTop: 8 }]}>Comfortable</Text>
-              <Text style={[styles.muted, { marginTop: 8 }]}>Cards and spacing optimized for touch targets and readability.</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>Tune spacing for compact lists, regular use, or larger touch targets.</Text>
+              <DensityPreview />
             </GlassCard>
           </>
+        )}
+
+        {panel === 'language' && (
+          <GlassCard>
+            <Text style={styles.cardTitle}>Languages</Text>
+            <Text style={[styles.muted, { marginTop: 8 }]}>Choose your language preference. The app stores this now so translated copy can roll out cleanly across every screen.</Text>
+            <View style={styles.colorPicker}>
+              {languages.map(([code, label]) => (
+                <Pressable key={code} style={[styles.languageChip, (user.language || 'en') === code && styles.segmentActive]} onPress={() => api.updateProfile({ language: code }).then(next => { setUser(next); notify('success', `Language set to ${label}.`); }).catch(error => notify('error', error.message))}>
+                  <Text style={styles.segmentText}>{label}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </GlassCard>
         )}
         
         {panel === 'voice' && (
@@ -1037,7 +1209,7 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
             <GlassCard>
               <Text style={styles.cardTitle}>Call Readiness</Text>
               <Text style={[styles.muted, { marginTop: 8 }]}>Voice and video calls are ready to configure.</Text>
-              <Text style={[styles.badge, { marginTop: 12 }]}>LiveKit integration pending</Text>
+              <Text style={[styles.badge, { marginTop: 12 }]}>VPS call service ready</Text>
             </GlassCard>
             <GlassCard>
               <Text style={styles.cardTitle}>Media Permissions</Text>
@@ -1070,6 +1242,7 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
       <SettingsRow icon="lock-closed" title="Security" body="2FA, login protection, recovery" onPress={() => setPanel('security')} />
       <SettingsRow icon="phone-portrait" title="Devices" body="Active sessions and device management" onPress={() => setPanel('devices')} />
       <SettingsRow icon="color-palette" title="Appearance" body="Theme, colors, and display settings" onPress={() => setPanel('appearance')} />
+      <SettingsRow icon="language" title="Languages" body="Change app language preference" onPress={() => setPanel('language')} />
       <SettingsRow icon="videocam" title="Voice & Video" body="Call settings and media permissions" onPress={() => setPanel('voice')} />
       
       {user.role === 'admin' && (
@@ -1078,12 +1251,34 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
           <PrimaryButton label="Admin Dashboard" icon="shield-checkmark" onPress={() => setTab('admin')} />
         </>
       )}
+      <PrimaryButton label="Ticket Center" icon="ticket" onPress={() => setTab('tickets')} />
       {(user.role === 'staff' || user.role === 'admin') && <PrimaryButton label="Staff Dashboard" icon="briefcase" onPress={() => setTab('staff')} />}
       
       <Pressable style={styles.logout} onPress={logout}>
         <Text style={styles.logoutText}>Log Out</Text>
       </Pressable>
     </ScrollView>
+  );
+}
+
+function DensityPreview() {
+  const [density, setDensity] = useState<keyof typeof densityChoices>('comfortable');
+  const scale = densityChoices[density].scale;
+  return (
+    <View style={{ gap: 10, marginTop: 12 }}>
+      <View style={styles.segment}>
+        {(Object.keys(densityChoices) as Array<keyof typeof densityChoices>).map(item => (
+          <Pressable key={item} style={[styles.segmentItem, density === item && styles.segmentActive]} onPress={() => setDensity(item)}>
+            <Text style={styles.segmentText}>{densityChoices[item].label}</Text>
+          </Pressable>
+        ))}
+      </View>
+      <View style={[styles.densityPreview, { padding: 12 * scale, gap: 8 * scale }]}>
+        <View style={[styles.densityLine, { height: 12 * scale, width: '72%' }]} />
+        <View style={[styles.densityLine, { height: 12 * scale, width: '54%' }]} />
+        <View style={[styles.densityButton, { height: 34 * scale }]} />
+      </View>
+    </View>
   );
 }
 
@@ -1108,12 +1303,22 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
   const [adminDisc, setAdminDisc] = useState('');
   const [adminMobile, setAdminMobile] = useState('');
   const [adminAltEmail, setAdminAltEmail] = useState('');
+  const [badgeCatalog, setBadgeCatalog] = useState<BadgeDefinition[]>([]);
+  const [roles, setRoles] = useState<RoleDefinition[]>([]);
+  const [newBadgeName, setNewBadgeName] = useState('');
+  const [userSearch, setUserSearch] = useState('');
+  const [userResults, setUserResults] = useState<User[]>([]);
+  const [moderationTarget, setModerationTarget] = useState<User | null>(null);
+  const [moderationAction, setModerationAction] = useState<'mute' | 'ban' | 'unban'>('mute');
 
-  const load = () => Promise.all([api.adminStats(), api.adminAnnouncements(), api.blogs()])
-    .then(([nextStats, nextAnnouncements, nextBlogs]) => {
+  const load = () => Promise.all([api.adminStats(), api.adminAnnouncements(), api.blogs(), api.badgeCatalog(), api.roles()])
+    .then(([nextStats, nextAnnouncements, nextBlogs, nextBadges, nextRoles]) => {
       setStats(nextStats);
       setAdminAnnouncements(nextAnnouncements);
       setAdminBlogs(nextBlogs);
+      setBadgeCatalog(nextBadges);
+      setRoles(nextRoles);
+      if (!nextBadges.some(item => item.name === badge) && nextBadges[0]) setBadge(nextBadges[0].name);
     })
     .catch(error => notify('error', error.message));
   useEffect(() => { load(); }, []);
@@ -1157,17 +1362,32 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
       .catch(error => notify('error', error.message));
   }
 
+  async function searchModerationUsers() {
+    if (!userSearch.trim()) return setUserResults([]);
+    await api.searchUsers(userSearch)
+      .then(setUserResults)
+      .catch(error => notify('error', error.message));
+  }
+
+  async function runModeration() {
+    if (!moderationTarget) return notify('error', 'Select a user first.');
+    await api.moderateUser({ userId: moderationTarget.id, action: moderationAction, hours: 8 })
+      .then(() => notify('success', `${moderationAction} applied to ${moderationTarget.displayName}.`))
+      .catch(error => notify('error', error.message));
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <Text style={styles.heroSmall}>Admin Dashboard</Text>
-      <StatsGrid values={[['Users', String(stats.users)], ['Reports', String(stats.reports)], ['Groups', String(stats.activeGroups)], ['Health', `${stats.systemHealth}%`]]} />
+      <StatsGrid values={[['Users', String(stats.users)], ['Active', String(stats.activeUsers ?? 0)], ['Reports', String(stats.reports)], ['Invites', String(stats.invites ?? 0)]]} />
       <GlassCard><Text style={styles.cardTitle}>Control Center</Text><Text style={styles.muted}>Jump into moderation tickets, export data, and manage user access from one place.</Text><View style={styles.ticketActions}><SecondaryButton label="Tickets" icon="ticket" onPress={() => setTab('tickets')} /><SecondaryButton label="Staff Queue" icon="briefcase" onPress={() => setTab('staff')} /><SecondaryButton label="Export Users" icon="download" onPress={exportUsers} /></View></GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Announcement</Text><Field icon="megaphone" placeholder="Title" value={title} onChangeText={setTitle} /><Field icon="document-text" placeholder="Message with links" value={body} onChangeText={setBody} multiline /><Field icon="image" placeholder="Image URL" value={imageUrl} onChangeText={setImageUrl} autoCapitalize="none" /><Field icon="link" placeholder="Clickable link URL" value={linkUrl} onChangeText={setLinkUrl} autoCapitalize="none" /><PrimaryButton label="Publish Announcement" icon="send" onPress={broadcast} /></GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Manage Announcements</Text><PrimaryButton label="Refresh" icon="refresh" onPress={load} /><Text style={styles.muted}>Announcements remain visible until deleted manually from this dashboard.</Text>{adminAnnouncements.length === 0 ? <Text style={styles.muted}>No announcements published.</Text> : adminAnnouncements.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.title}</Text><Text style={styles.meta}>{new Date(item.createdAt).toLocaleDateString()}</Text></View><IconButton icon="trash" onPress={() => removeAnnouncement(item.id)} /></View>)}</GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Blog Post</Text><Field icon="newspaper" placeholder="Title" value={blogTitle} onChangeText={setBlogTitle} /><Field icon="document-text" placeholder="Body with links" value={blogBody} onChangeText={setBlogBody} multiline /><Field icon="image" placeholder="Image URL" value={blogImageUrl} onChangeText={setBlogImageUrl} autoCapitalize="none" /><Field icon="link" placeholder="Clickable link URL" value={blogLinkUrl} onChangeText={setBlogLinkUrl} autoCapitalize="none" /><PrimaryButton label="Publish Blog" icon="cloud-upload" onPress={createBlog} /></GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Manage Blog Posts</Text>{adminBlogs.length === 0 ? <Text style={styles.muted}>No blog posts published.</Text> : adminBlogs.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.title}</Text><Text style={styles.meta}>{item.category || 'Update'}</Text></View><IconButton icon="trash" onPress={() => removeBlog(item.id)} /></View>)}</GlassCard>
-      <GlassCard><Text style={styles.cardTitle}>Badges</Text><Field icon="at" placeholder="Username" value={badgeUser} onChangeText={setBadgeUser} autoCapitalize="none" /><Field icon="ribbon" placeholder="Badge" value={badge} onChangeText={setBadge} /><PrimaryButton label="Grant Badge" icon="ribbon" onPress={() => api.grantBadge({ username: badgeUser, badge }).then(() => notify('success', 'Badge granted.')).catch(error => notify('error', error.message))} /></GlassCard>
-      <GlassCard><Text style={styles.cardTitle}>Roles</Text><Field icon="at" placeholder="Username" value={roleUser} onChangeText={setRoleUser} autoCapitalize="none" /><View style={styles.segment}>{(['user', 'staff', 'admin'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, role === item && styles.segmentActive]} onPress={() => setRole(item)}><Text style={styles.segmentText}>{item}</Text></Pressable>)}</View><PrimaryButton label="Update Role" icon="key" onPress={() => api.setRole({ username: roleUser, role }).then(() => notify('success', 'Role updated.')).catch(error => notify('error', error.message))} /></GlassCard>
+      <GlassCard><Text style={styles.cardTitle}>Badges</Text><Field icon="at" placeholder="Username" value={badgeUser} onChangeText={setBadgeUser} autoCapitalize="none" /><View style={styles.segment}>{badgeCatalog.map(item => <Pressable key={item.id} style={[styles.segmentItem, badge === item.name && styles.segmentActive]} onPress={() => setBadge(item.name)}><Text style={styles.segmentText}>{item.name}</Text></Pressable>)}</View><PrimaryButton label="Grant Badge" icon="ribbon" onPress={() => api.grantBadge({ username: badgeUser, badge }).then(() => notify('success', 'Badge granted.')).catch(error => notify('error', error.message))} /><Field icon="add" placeholder="Create/edit badge name" value={newBadgeName} onChangeText={setNewBadgeName} /><View style={styles.ticketActions}><SecondaryButton label="Save Badge" icon="save" onPress={() => api.createBadge({ name: newBadgeName, icon: 'ribbon', color: '#E6C07A' }).then(() => { setNewBadgeName(''); load(); }).catch(error => notify('error', error.message))} />{badgeCatalog.find(item => item.name === badge) ? <SecondaryButton label="Delete Selected" icon="trash" onPress={() => api.deleteBadge(badgeCatalog.find(item => item.name === badge)!.id).then(load).catch(error => notify('error', error.message))} /> : null}</View></GlassCard>
+      <GlassCard><Text style={styles.cardTitle}>Roles</Text><Field icon="at" placeholder="Username" value={roleUser} onChangeText={setRoleUser} autoCapitalize="none" /><View style={styles.segment}>{roles.map(item => <Pressable key={item.id} style={[styles.segmentItem, role === item.id && styles.segmentActive]} onPress={() => setRole(item.id)}><Text style={styles.segmentText}>{item.name}</Text></Pressable>)}</View><Text style={styles.muted}>{roles.find(item => item.id === role)?.permissions.join(', ')}</Text><PrimaryButton label="Update Role" icon="key" onPress={() => api.setRole({ username: roleUser, role }).then(() => notify('success', 'Role updated.')).catch(error => notify('error', error.message))} /></GlassCard>
+      <GlassCard><Text style={styles.cardTitle}>Mute / Ban Users</Text><Field icon="search" placeholder="Search users" value={userSearch} onChangeText={setUserSearch} autoCapitalize="none" /><PrimaryButton label="Search Users" icon="search" onPress={searchModerationUsers} />{userResults.map(item => <Pressable key={item.id} style={styles.memberPick} onPress={() => setModerationTarget(item)}><Text style={styles.body}>{item.displayName} @{item.tag || item.username}</Text><Ionicons name={moderationTarget?.id === item.id ? 'radio-button-on' : 'radio-button-off'} size={22} color="#CDA16A" /></Pressable>)}<View style={styles.segment}>{(['mute', 'ban', 'unban'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, moderationAction === item && styles.segmentActive]} onPress={() => setModerationAction(item)}><Text style={styles.segmentText}>{item}</Text></Pressable>)}</View><PrimaryButton label="Apply Moderation" icon="hammer" onPress={runModeration} /></GlassCard>
       <GlassCard><Text style={styles.cardTitle}>User Control</Text><Field icon="at" placeholder="User tag/email" value={adminUser} onChangeText={setAdminUser} autoCapitalize="none" /><Field icon="person" placeholder="New username" value={adminNewUsername} onChangeText={setAdminNewUsername} autoCapitalize="none" /><Field icon="keypad" placeholder="New 5-digit #" value={adminDisc} onChangeText={setAdminDisc} keyboardType="number-pad" maxLength={5} /><Field icon="call" placeholder="Mobile" value={adminMobile} onChangeText={setAdminMobile} keyboardType="phone-pad" /><Field icon="mail" placeholder="Alternate email" value={adminAltEmail} onChangeText={setAdminAltEmail} autoCapitalize="none" /><PrimaryButton label="Update User" icon="save" onPress={() => updateAdminUser(false)} /><SecondaryButton label="Reset Username Limit" icon="refresh" onPress={() => updateAdminUser(true)} /></GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Exports</Text><Text style={styles.muted}>Download users as a CSV spreadsheet with profile, contact, history, and activity fields.</Text><PrimaryButton label="Download Users CSV" icon="download" onPress={exportUsers} /></GlassCard>
     </ScrollView>
@@ -1271,13 +1491,13 @@ function Header({ user, setTab }: { user: User; setTab: (tab: AppTab) => void })
   return (
     <View style={styles.header}>
       <Pressable onPress={() => setTab('home')} style={styles.headerBrand}><Image source={logo} style={styles.headerLogo} /><Text style={styles.headerTitle}>Zevryl</Text></Pressable>
-      <View style={styles.headerActions}><Text style={styles.headerUser}>{user.displayName}</Text><IconButton icon="person" onPress={() => setTab('profile')} /></View>
+      <View style={styles.headerActions}><Text style={styles.headerUser}>{user.displayName}</Text><Pressable onPress={() => setTab('profile')}><UserAvatar user={user} size={38} /></Pressable></View>
     </View>
   );
 }
 
 function BottomNav({ tab, setTab, user, bottom }: { tab: AppTab; setTab: (tab: AppTab) => void; user: User; bottom: number }) {
-  const items: Array<[AppTab, keyof typeof Ionicons.glyphMap]> = [['home', 'home'], ['friends', 'people'], ['chats', 'chatbubbles'], ['groups', 'grid'], ['profile', 'person'], ['settings', 'settings']];
+  const items: Array<[AppTab, keyof typeof Ionicons.glyphMap]> = [['home', 'home'], ['friends', 'people'], ['chats', 'chatbubbles'], ['groups', 'grid'], ['tickets', 'ticket'], ['settings', 'settings']];
   return (
     <BlurView intensity={70} tint="dark" style={[styles.nav, { bottom }]}>
       {items.map(([key, icon]) => <Pressable key={key} onPress={() => setTab(key)} style={styles.navItem}><Ionicons name={icon} size={21} color={tab === key ? '#E6C07A' : '#9AA391'} /></Pressable>)}
@@ -1297,6 +1517,25 @@ function AnnouncementModal({ announcement, visible, onClose }: { announcement: A
           <Text style={styles.heroSmall}>{announcement.title}</Text>
           <Text style={styles.body}>{announcement.body}</Text>
           <PrimaryButton label="Mark Read" icon="checkmark" onPress={onClose} />
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function UpdateModal({ update, visible, onClose }: { update: AppUpdate | null; visible: boolean; onClose: () => void }) {
+  if (!update) return null;
+  return (
+    <Modal visible={visible} transparent animationType="fade">
+      <View style={styles.modalBackdrop}>
+        <View style={styles.announcementModal}>
+          <Text style={styles.kicker}>App Update</Text>
+          <Text style={styles.heroSmall}>New Update {update.version}</Text>
+          <Text style={styles.body}>{update.notes || 'Performance, UI, messaging, and stability improvements are ready.'}</Text>
+          <View style={styles.modalActions}>
+            {update.apkUrl ? <PrimaryButton label="Update App" icon="download" onPress={() => { openLink(update.apkUrl); void onClose(); }} /> : null}
+            <SecondaryButton label={update.required ? 'Close' : 'Later'} icon="close" onPress={onClose} />
+          </View>
         </View>
       </View>
     </Modal>
@@ -1334,17 +1573,18 @@ function SettingsRow({ icon, title, body, onPress }: { icon: keyof typeof Ionico
   );
 }
 
-function settingsPanelTitle(panel: 'account' | 'privacy' | 'devices' | 'appearance' | 'voice' | 'security') {
-  return ({ account: 'Account', privacy: 'Privacy', devices: 'Logged In Devices', appearance: 'Appearance', voice: 'Voice & Video', security: 'Security' })[panel];
+function settingsPanelTitle(panel: 'account' | 'privacy' | 'devices' | 'appearance' | 'language' | 'voice' | 'security') {
+  return ({ account: 'Account', privacy: 'Privacy', devices: 'Logged In Devices', appearance: 'Appearance', language: 'Languages', voice: 'Voice & Video', security: 'Security' })[panel];
 }
 
-function settingsPanelBody(panel: 'account' | 'privacy' | 'devices' | 'appearance' | 'voice' | 'security') {
+function settingsPanelBody(panel: 'account' | 'privacy' | 'devices' | 'appearance' | 'language' | 'voice' | 'security') {
   return ({
     account: 'Manage profile details and send a recovery request for your account.',
     privacy: 'DM privacy, block controls, and report management are active. More granular toggles can be added without changing account data.',
     devices: 'Current device is signed in. Full device history will appear here once persistent sessions are enabled.',
     appearance: 'Terria is the active theme. The layout is tuned for mobile readability and raised system navigation.',
-    voice: 'Call and video controls are visible in DMs. LiveKit credentials are required before calls can connect.',
+    language: 'Your language choice is saved to your account.',
+    voice: 'Call and video controls are available in DMs and groups. The VPS returns secure room tokens for supported call rooms.',
     security: '2FA, login cooldowns, and recovery controls help protect your account.'
   })[panel];
 }
@@ -1662,7 +1902,7 @@ const styles = StyleSheet.create({
   friendOptionText: { color: '#E7EBDD', fontSize: 15, fontWeight: '500', flex: 1 },
   
   // Chat & Messages
-  chatLayout: { flex: 1, paddingHorizontal: 10, paddingBottom: 156, gap: 10 },
+  chatLayout: { flex: 1, paddingHorizontal: 10, paddingBottom: 96, gap: 8 },
   dmListFull: { padding: 6, gap: 10 },
   dmCard: { minHeight: 66, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(218,226,202,.13)', backgroundColor: 'rgba(22,30,23,.82)', padding: 12, flexDirection: 'row', alignItems: 'center', gap: 12 },
   dmRail: { width: 122, borderRightWidth: 1, borderColor: 'rgba(218,226,202,.1)', paddingTop: 8, gap: 8 },
@@ -1706,8 +1946,10 @@ const styles = StyleSheet.create({
   
   chatCard: { gap: 12 },
   composerContainer: { flexDirection: 'row', alignItems: 'flex-end', gap: 12, padding: 14, borderTopWidth: 1, borderColor: 'rgba(255,255,255,.08)', backgroundColor: 'rgba(5,7,11,.92)' },
-  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingVertical: 10, paddingBottom: 18, backgroundColor: 'rgba(17,23,18,.96)' },
-  composerInput: { flex: 1, minHeight: 48, maxHeight: 110, color: '#F4F0E6', borderRadius: 12, backgroundColor: '#151D16', paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, borderWidth: 1, borderColor: 'rgba(218,226,202,.12)' },
+  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingVertical: 8, paddingBottom: 10, backgroundColor: 'rgba(17,23,18,.96)' },
+  composerInput: { flex: 1, minHeight: 58, maxHeight: 132, color: '#F4F0E6', borderRadius: 12, backgroundColor: '#151D16', paddingHorizontal: 14, paddingVertical: 14, fontSize: 15, borderWidth: 1, borderColor: 'rgba(218,226,202,.12)' },
+  pinnedBar: { minHeight: 38, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', backgroundColor: 'rgba(230,192,122,.10)', paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  pinnedText: { color: '#EDE4C8', fontWeight: '800', flex: 1, fontSize: 12 },
   callActions: { flexDirection: 'row', gap: 10 },
   callCard: { gap: 12, borderColor: 'rgba(255,170,168,.15)', borderWidth: 1 },
   
@@ -1764,10 +2006,13 @@ const styles = StyleSheet.create({
   avatarPreview: { width: 100, height: 100, borderRadius: 50, marginTop: 8 },
   modalActions: { gap: 10 },
   
-  segment: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  segment: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 12 },
   segmentItem: { flex: 1, minHeight: 44, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(218,226,202,.14)', alignItems: 'center', justifyContent: 'center' },
   segmentActive: { backgroundColor: 'rgba(230,192,122,.18)', borderColor: 'rgba(230,192,122,.4)' },
   segmentText: { color: '#D9E2CC', fontWeight: '800' },
+  densityPreview: { borderRadius: 12, borderWidth: 1, borderColor: 'rgba(218,226,202,.14)', backgroundColor: 'rgba(11,16,12,.55)' },
+  densityLine: { borderRadius: 999, backgroundColor: 'rgba(230,192,122,.34)' },
+  densityButton: { width: 120, borderRadius: 10, backgroundColor: 'rgba(230,192,122,.18)', borderWidth: 1, borderColor: 'rgba(230,192,122,.34)' },
   locked: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24 },
   
   // Settings Panels
@@ -1791,6 +2036,7 @@ const styles = StyleSheet.create({
   colorGrid: { flexDirection: 'row', gap: 12, marginTop: 12 },
   colorSwatch: { width: 48, height: 48, borderRadius: 10 },
   colorPicker: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 12 },
+  languageChip: { minHeight: 38, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(218,226,202,.14)', paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,.04)' },
   colorSwatchButton: { width: 34, height: 34, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,.18)' },
   colorSwatchSelected: { borderColor: '#F4F0E6', borderWidth: 3 },
   
