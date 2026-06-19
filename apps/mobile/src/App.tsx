@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import Constants from 'expo-constants';
-import { AudioSession, isTrackReference, LiveKitRoom, registerGlobals, useTracks, VideoTrack } from '@livekit/react-native';
+import { AudioSession, isTrackReference, LiveKitRoom, registerGlobals, useRoomContext, useTracks, VideoTrack } from '@livekit/react-native';
 import * as Device from 'expo-device';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -657,18 +657,18 @@ function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'erro
   const selectedStory = selectedStoryStack?.[selectedStoryIndex] || null;
 
   const load = () => {
-    Promise.all([api.announcements(), api.blogs(), api.stories()])
-      .then(([a, b, s]) => {
-        setAnnouncements({ loading: false, data: a });
-        setBlogs({ loading: false, data: b });
-        setStories({ loading: false, data: s });
-      })
-      .catch(error => {
-        setAnnouncements({ loading: false, data: [], error: error.message });
-        setBlogs({ loading: false, data: [], error: error.message });
-        setStories({ loading: false, data: [], error: error.message });
-        notify('error', error.message);
-      });
+    setAnnouncements(current => ({ ...current, loading: true, error: undefined }));
+    setBlogs(current => ({ ...current, loading: true, error: undefined }));
+    setStories(current => ({ ...current, loading: true, error: undefined }));
+    api.announcements()
+      .then(data => setAnnouncements({ loading: false, data }))
+      .catch(error => { setAnnouncements({ loading: false, data: [], error: error.message }); notify('error', error.message); });
+    api.blogs()
+      .then(data => setBlogs({ loading: false, data }))
+      .catch(error => { setBlogs({ loading: false, data: [], error: error.message }); notify('error', error.message); });
+    api.stories()
+      .then(data => setStories({ loading: false, data }))
+      .catch(error => { setStories({ loading: false, data: [], error: error.message }); notify('error', error.message); });
   };
   useEffect(() => { load(); }, []);
 
@@ -748,6 +748,29 @@ function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'erro
         await Clipboard.setStringAsync(message);
         notify('success', 'Story link copied.');
       });
+  }
+
+  function deleteStory(story: Story) {
+    Alert.alert('Delete story?', 'This story will be removed for you and your friends.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => api.deleteStory(story.id)
+          .then(() => {
+            setStories(current => ({ ...current, data: current.data.filter(item => item.id !== story.id) }));
+            setSelectedStoryStack(current => {
+              if (!current) return current;
+              const next = current.filter(item => item.id !== story.id);
+              if (!next.length) return null;
+              setSelectedStoryIndex(index => Math.min(index, next.length - 1));
+              return next;
+            });
+            notify('success', 'Story deleted.');
+          })
+          .catch(error => notify('error', error.message))
+      }
+    ]);
   }
 
   function openStoryStack(stack: Story[]) {
@@ -867,6 +890,7 @@ function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'erro
                 onCommentChange={setStoryComment}
                 onComment={addStoryComment}
                 onShare={shareStory}
+                onDelete={selectedStory.userId === user.id ? deleteStory : undefined}
                 onClose={() => setSelectedStoryStack(null)}
                 onPrevious={() => { setStoryComment(''); setSelectedStoryIndex(index => Math.max(0, index - 1)); }}
                 onNext={() => { setStoryComment(''); setSelectedStoryIndex(index => Math.min((selectedStoryStack?.length || 1) - 1, index + 1)); }}
@@ -888,6 +912,7 @@ function StoryViewer({
   onCommentChange,
   onComment,
   onShare,
+  onDelete,
   onClose,
   onPrevious,
   onNext
@@ -900,10 +925,12 @@ function StoryViewer({
   onCommentChange: (value: string) => void;
   onComment: () => void;
   onShare: (story: Story) => void;
+  onDelete?: (story: Story) => void;
   onClose: () => void;
   onPrevious: () => void;
   onNext: () => void;
 }) {
+  const insets = useSafeAreaInsets();
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.storyViewerWrap}>
       <View style={styles.storyProgressRow}>
@@ -919,13 +946,18 @@ function StoryViewer({
         </View>
         <View style={styles.storyViewerActions}>
           <IconButton icon="share-social" onPress={() => onShare(story)} />
+          {onDelete ? <IconButton icon="trash" onPress={() => onDelete(story)} /> : null}
           <IconButton icon="close" onPress={onClose} />
         </View>
       </View>
       <View style={styles.storyMediaFrame}>
         <StoryMedia story={story} />
-        {index > 0 ? <Pressable style={[styles.storyNavTap, styles.storyNavLeft]} onPress={onPrevious}><Ionicons name="chevron-back" size={26} color="#F4F0E6" /></Pressable> : null}
-        {index < stories.length - 1 ? <Pressable style={[styles.storyNavTap, styles.storyNavRight]} onPress={onNext}><Ionicons name="chevron-forward" size={26} color="#F4F0E6" /></Pressable> : null}
+        <Pressable style={[styles.storyNavTap, styles.storyNavLeft]} onPress={onPrevious} disabled={index === 0}>
+          {index > 0 ? <Ionicons name="chevron-back" size={28} color="#F4F0E6" /> : null}
+        </Pressable>
+        <Pressable style={[styles.storyNavTap, styles.storyNavRight]} onPress={onNext} disabled={index >= stories.length - 1}>
+          {index < stories.length - 1 ? <Ionicons name="chevron-forward" size={28} color="#F4F0E6" /> : null}
+        </Pressable>
       </View>
       <ScrollView style={styles.storyViewerDetails} contentContainerStyle={styles.storyViewerDetailsContent} keyboardShouldPersistTaps="handled">
         {story.caption ? <Text style={styles.body}>{story.caption}</Text> : null}
@@ -939,7 +971,7 @@ function StoryViewer({
         ))}
       </ScrollView>
       {story.allowComments !== false ? (
-        <View style={styles.storyCommentComposer}>
+        <View style={[styles.storyCommentComposer, { paddingBottom: Math.max(insets.bottom, 10) }]}>
           <TextInput
             style={styles.storyCommentInput}
             placeholder="Add a comment"
@@ -979,6 +1011,12 @@ function FriendsScreen({ notify, setTab }: { notify: (tone: 'error' | 'success' 
   const [profileCanUnfriend, setProfileCanUnfriend] = useState(false);
   const [reportReason, setReportReason] = useState('');
   const [reportProof, setReportProof] = useState('');
+
+  function updateFriendUsername(value: string) {
+    const clean = value.toLowerCase().replace(/\s/g, '');
+    const [name, tag] = clean.split('#');
+    setUsername(tag === undefined ? name.slice(0, 30) : `${name.slice(0, 30)}#${tag.replace(/\D/g, '').slice(0, 5)}`);
+  }
 
   const load = () => api.friends()
     .then(data => setState({ loading: false, data }))
@@ -1023,7 +1061,7 @@ function FriendsScreen({ notify, setTab }: { notify: (tone: 'error' | 'success' 
       <SectionTitle title="Friends" action="Refresh" onPress={load} />
       <GlassCard>
         <Text style={styles.cardTitle}>Add Friend</Text>
-        <Field icon="person-add" placeholder="username#12345" value={username} onChangeText={setUsername} autoCapitalize="none" />
+        <Field icon="person-add" placeholder="username#12345" value={username} onChangeText={updateFriendUsername} autoCapitalize="none" maxLength={36} />
         <PrimaryButton label="Send Request" icon="send" onPress={() => username ? action(api.requestFriend(username), 'Friend request sent.') : notify('error', 'Enter a username tag first.')} />
       </GlassCard>
       {state.loading ? <LoadingState /> : state.error ? <ErrorState message={state.error} onRetry={load} /> : null}
@@ -1573,7 +1611,7 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
           {typingText ? <Text style={styles.typingText}>{typingText}</Text> : null}
           {showEmoji && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search emoji or use your keyboard for all emoji" placeholderTextColor="#899486" value={emojiSearch} onChangeText={setEmojiSearch} /> <View style={styles.pickerRow}>{emojiChoices.map(item => <Pressable key={item} style={styles.pickerButton} onPress={() => setBody(prev => `${prev}${item}`)}><Text style={styles.emojiText}>{item}</Text></Pressable>)}</View></View>}
           {showGif && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search GIFs" placeholderTextColor="#899486" value={gifSearch} onChangeText={setGifSearch} /><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.gifPicker}>{gifLoading ? <ActivityIndicator color="#E6C07A" /> : gifResults.length ? gifResults.map(item => <Pressable key={item.id} onPress={() => send({ type: 'gif', attachmentUrl: item.url, body: item.title || 'GIF' })}><Image source={{ uri: item.previewUrl || item.url }} style={styles.gifThumb} /></Pressable>) : <Text style={styles.muted}>No GIF found. Try another search.</Text>}</ScrollView></View>}
-          <View style={[styles.composer, { marginBottom: Math.max(insets.bottom, 6) }]}>
+          <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, 6) }]}>
             <IconButton icon="happy" onPress={() => openTray('emoji')} />
             <IconButton icon="film" onPress={() => openTray('gif')} />
             <IconButton icon="attach" onPress={() => setShowUploadSheet(true)} />
@@ -1627,20 +1665,74 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
 
 function ProfileScreen({ user, setUser, notify }: { user: User; setUser: (user: User) => void; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
   const [editing, setEditing] = useState(false);
+  const [ownStories, setOwnStories] = useState<Story[]>([]);
+  const [profileStoryOpen, setProfileStoryOpen] = useState(false);
+  const [selectedStoryIndex, setSelectedStoryIndex] = useState(0);
+  const [storyComment, setStoryComment] = useState('');
+  const [storyCommenting, setStoryCommenting] = useState(false);
   const theme = profileThemes[user.profileTheme || 'terria'];
   const accent = user.profileColor || theme.color;
+  const selectedStory = ownStories[selectedStoryIndex] || null;
+
+  const loadStories = () => api.stories()
+    .then(items => setOwnStories(items.filter(story => story.userId === user.id).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())))
+    .catch(() => undefined);
+  useEffect(() => { loadStories(); }, [user.id]);
+
+  async function addStoryComment() {
+    if (!selectedStory || !storyComment.trim() || storyCommenting) return;
+    setStoryCommenting(true);
+    await api.commentStory(selectedStory.id, storyComment)
+      .then(story => {
+        setOwnStories(current => current.map(item => item.id === story.id ? story : item));
+        setStoryComment('');
+        notify('success', 'Comment added.');
+      })
+      .catch(error => notify('error', error.message))
+      .finally(() => setStoryCommenting(false));
+  }
+
+  async function shareStory(story: Story) {
+    const title = `${story.author.displayName}'s Zevryl story`;
+    const message = [title, story.caption?.trim(), story.mediaUrl].filter(Boolean).join('\n');
+    await Share.share({ title, message, url: story.mediaUrl }).catch(async () => {
+      await Clipboard.setStringAsync(message);
+      notify('success', 'Story link copied.');
+    });
+  }
+
+  function deleteStory(story: Story) {
+    Alert.alert('Delete story?', 'This story will be removed for you and your friends.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => api.deleteStory(story.id)
+          .then(() => {
+            setOwnStories(current => {
+              const next = current.filter(item => item.id !== story.id);
+              if (!next.length) setProfileStoryOpen(false);
+              setSelectedStoryIndex(index => Math.min(index, Math.max(0, next.length - 1)));
+              return next;
+            });
+            notify('success', 'Story deleted.');
+          })
+          .catch(error => notify('error', error.message))
+      }
+    ]);
+  }
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
-      {user.customStatus ? <CustomStatusBanner text={user.customStatus} /> : null}
       <GlassCard style={[styles.profileHero, { borderColor: accent, backgroundColor: `${accent}22` }]}>
         {user.bannerUrl ? <Image source={{ uri: user.bannerUrl }} style={styles.profileBannerImage} resizeMode="cover" /> : <View style={[styles.profileBanner, { backgroundColor: accent }]} />}
-        <View>
+        <Pressable onPress={() => { if (ownStories.length) { setSelectedStoryIndex(0); setProfileStoryOpen(true); } }} style={ownStories.length ? styles.profileStoryRing : undefined}>
           <Image source={user.avatarUrl ? { uri: user.avatarUrl } : logo} style={[styles.profileLogo, { borderColor: accent }]} />
           <View style={[styles.statusDot, { backgroundColor: presenceMeta[user.presence].color }]} />
-        </View>
+        </Pressable>
         <Text style={styles.profileName}>{user.displayName}</Text>
         <Text style={styles.muted}>@{user.tag || user.username}</Text>
+        {user.customStatus ? <CustomStatusBanner text={user.customStatus} compact /> : null}
         <View style={styles.badgeRow}>{normalizeBadges(user.badges).map(badge => <BadgeChip key={badge} badge={badge} />)}</View>
         <PrimaryButton label="Edit Profile" icon="create" onPress={() => setEditing(true)} />
       </GlassCard>
@@ -1673,6 +1765,28 @@ function ProfileScreen({ user, setUser, notify }: { user: User; setUser: (user: 
       </GlassCard>
       
       <ProfileEditor visible={editing} user={user} onClose={() => setEditing(false)} onSaved={(next) => { setUser(next); setEditing(false); notify('success', 'Profile updated.'); }} notify={notify} />
+      <Modal visible={profileStoryOpen && Boolean(selectedStory)} transparent animationType="slide">
+        <View style={styles.sheetBackdrop}>
+          <View style={styles.storySheet}>
+            {selectedStory ? (
+              <StoryViewer
+                story={selectedStory}
+                stories={ownStories}
+                index={selectedStoryIndex}
+                comment={storyComment}
+                commenting={storyCommenting}
+                onCommentChange={setStoryComment}
+                onComment={addStoryComment}
+                onShare={shareStory}
+                onDelete={deleteStory}
+                onClose={() => { setProfileStoryOpen(false); setSelectedStoryIndex(0); loadStories(); }}
+                onPrevious={() => { setStoryComment(''); setSelectedStoryIndex(index => Math.max(0, index - 1)); }}
+                onNext={() => { setStoryComment(''); setSelectedStoryIndex(index => Math.min(ownStories.length - 1, index + 1)); }}
+              />
+            ) : null}
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -1694,6 +1808,14 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
   const [busy, setBusy] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [uploadingBanner, setUploadingBanner] = useState(false);
+
+  function updateUsername(value: string) {
+    setUsername(value.toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 30));
+  }
+
+  function updateDiscriminator(value: string) {
+    setDiscriminator(value.replace(/\D/g, '').slice(0, 5));
+  }
 
   useEffect(() => {
     if (visible) {
@@ -1764,6 +1886,10 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
         notify('error', 'Display name is required.');
         return;
       }
+      if (username.trim().length > 30) {
+        notify('error', 'Username can be at most 30 characters.');
+        return;
+      }
       
       setBusy(true);
       const profileUpdated = await api.updateProfile({ 
@@ -1830,9 +1956,9 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
           
           <GlassCard>
             <Text style={styles.label}>Basic Information</Text>
-            <Field icon="person" placeholder="Display name" value={displayName} onChangeText={setDisplayName} />
-            <Field icon="at" placeholder="Username" value={username} onChangeText={setUsername} autoCapitalize="none" />
-            <Field icon="keypad" placeholder="5-digit # (VIP required)" value={discriminator} onChangeText={setDiscriminator} keyboardType="number-pad" maxLength={5} />
+            <Field icon="person" placeholder="Nickname / display name" value={displayName} onChangeText={setDisplayName} maxLength={60} />
+            <Field icon="at" placeholder="Username" value={username} onChangeText={updateUsername} autoCapitalize="none" maxLength={30} />
+            <Field icon="keypad" placeholder="5-digit # (VIP required)" value={discriminator} onChangeText={updateDiscriminator} keyboardType="number-pad" maxLength={5} />
             <Field icon="call" placeholder="Mobile number" value={mobile} onChangeText={setMobile} keyboardType="phone-pad" />
             <Field icon="mail" placeholder="Alternate email" value={alternateEmail} onChangeText={setAlternateEmail} autoCapitalize="none" keyboardType="email-address" />
             <Field icon="document-text" placeholder="Bio" value={bio} onChangeText={setBio} multiline />
@@ -2998,9 +3124,25 @@ function CallMediaRoom({ call, onLeave }: { call: CallState; onLeave: () => void
       options={{ adaptiveStream: { pixelDensity: 'screen' } }}
       onDisconnected={onLeave}
     >
-      <LiveKitVideoGrid video={call.kind === 'video'} />
+      <CallMediaController call={call} />
+      <LiveKitVideoGrid video={call.kind === 'video' && call.videoEnabled} />
     </LiveKitRoom>
   );
+}
+
+function CallMediaController({ call }: { call: CallState }) {
+  const room = useRoomContext();
+  useEffect(() => {
+    if (!room?.localParticipant) return;
+    room.localParticipant.setMicrophoneEnabled(!call.muted && !call.deafened).catch(() => undefined);
+  }, [room, call.muted, call.deafened]);
+
+  useEffect(() => {
+    if (!room?.localParticipant || call.kind !== 'video') return;
+    room.localParticipant.setCameraEnabled(call.videoEnabled, { facingMode: call.cameraFacing === 'front' ? 'user' : 'environment' }).catch(() => undefined);
+  }, [room, call.kind, call.videoEnabled, call.cameraFacing]);
+
+  return null;
 }
 
 function LiveKitVideoGrid({ video }: { video: boolean }) {
@@ -3093,7 +3235,6 @@ function ProfileSheet({
       <View style={styles.sheetBackdrop}>
         <View style={[styles.profileSheet, { borderColor: theme.color }]}>
           <ScrollView contentContainerStyle={styles.profileSheetContent} keyboardShouldPersistTaps="handled">
-            {user.customStatus ? <CustomStatusBanner text={user.customStatus} compact /> : null}
             {user.bannerUrl ? <Image source={{ uri: user.bannerUrl }} style={styles.sheetBanner} resizeMode="cover" /> : <View style={[styles.sheetBanner, { backgroundColor: user.profileColor || theme.color }]} />}
             <View style={styles.sheetHeader}>
               <View>
@@ -3102,6 +3243,7 @@ function ProfileSheet({
               <View style={styles.flex}>
                 <Text style={styles.profileName}>{user.displayName}</Text>
                 <Text style={styles.muted}>@{user.tag || user.username}</Text>
+                {user.customStatus ? <CustomStatusBanner text={user.customStatus} compact /> : null}
                 <View style={styles.badgeRow}>{normalizeBadges(user.badges).map(badge => <BadgeChip key={badge} badge={badge} />)}</View>
               </View>
               <IconButton icon="close" onPress={onClose} />
@@ -3408,15 +3550,15 @@ const styles = StyleSheet.create({
   storyViewerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   storyMediaFrame: { width: '100%', aspectRatio: 9 / 14, borderRadius: 14, overflow: 'hidden', backgroundColor: '#050806', borderWidth: 1, borderColor: 'rgba(230,192,122,.16)' },
   storyLargeMedia: { width: '100%', height: '100%', backgroundColor: '#050806' },
-  storyNavTap: { position: 'absolute', top: '42%', width: 44, height: 64, borderRadius: 12, backgroundColor: 'rgba(0,0,0,.24)', alignItems: 'center', justifyContent: 'center' },
-  storyNavLeft: { left: 8 },
-  storyNavRight: { right: 8 },
+  storyNavTap: { position: 'absolute', top: 0, bottom: 0, width: '50%', alignItems: 'center', justifyContent: 'center' },
+  storyNavLeft: { left: 0, alignItems: 'flex-start', paddingLeft: 8 },
+  storyNavRight: { right: 0, alignItems: 'flex-end', paddingRight: 8 },
   storyViewerDetails: { flex: 1 },
   storyViewerDetailsContent: { gap: 10, paddingBottom: 6 },
   storyComment: { borderTopWidth: 1, borderTopColor: 'rgba(218,226,202,.08)', paddingTop: 10, gap: 4 },
-  storyCommentComposer: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: 'rgba(218,226,202,.08)' },
-  storyCommentInput: { flex: 1, minHeight: 44, maxHeight: 96, color: '#F4F0E6', borderRadius: 10, backgroundColor: '#151D16', paddingHorizontal: 12, borderWidth: 1, borderColor: 'rgba(218,226,202,.12)' },
-  storySendButton: { width: 44, height: 44, borderRadius: 12, backgroundColor: '#E6C07A', alignItems: 'center', justifyContent: 'center' },
+  storyCommentComposer: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 8, paddingTop: 8, paddingHorizontal: 2, borderTopWidth: 1, borderTopColor: 'rgba(218,226,202,.08)', backgroundColor: '#101611' },
+  storyCommentInput: { flex: 1, minHeight: 42, maxHeight: 90, color: '#F4F0E6', borderRadius: 22, backgroundColor: '#151D16', paddingHorizontal: 16, paddingVertical: 8, borderWidth: 1, borderColor: 'rgba(218,226,202,.16)' },
+  storySendButton: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#E6C07A', alignItems: 'center', justifyContent: 'center' },
   disabledButton: { opacity: 0.55 },
   storyMentionList: { maxHeight: 170, marginTop: 6 },
   storyToggleRow: { minHeight: 58, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(218,226,202,.14)', backgroundColor: 'rgba(255,255,255,.04)', paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10 },
@@ -3561,8 +3703,8 @@ const styles = StyleSheet.create({
   
   chatCard: { gap: 12 },
   composerContainer: { flexDirection: 'row', alignItems: 'flex-end', gap: 12, padding: 14, borderTopWidth: 1, borderColor: 'rgba(255,255,255,.08)', backgroundColor: 'rgba(5,7,11,.92)' },
-  composer: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 8, paddingHorizontal: 6, backgroundColor: 'rgba(17,23,18,.86)', borderTopWidth: 1, borderColor: 'rgba(218,226,202,.08)' },
-  composerInput: { flex: 1, minHeight: 44, maxHeight: 104, color: '#F4F0E6', borderRadius: 10, backgroundColor: '#151D16', paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, borderWidth: 1, borderColor: 'rgba(218,226,202,.12)' },
+  composer: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingTop: 6, paddingHorizontal: 6, backgroundColor: 'rgba(17,23,18,.86)', borderTopWidth: 1, borderColor: 'rgba(218,226,202,.08)' },
+  composerInput: { flex: 1, minHeight: 38, maxHeight: 84, color: '#F4F0E6', borderRadius: 10, backgroundColor: '#151D16', paddingHorizontal: 12, paddingVertical: 7, fontSize: 15, borderWidth: 1, borderColor: 'rgba(218,226,202,.12)' },
   uploadSheet: { width: '100%', borderRadius: 12, backgroundColor: '#182019', borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', padding: 16, gap: 10 },
   uploadGrid: { gap: 8 },
   fileAttachment: { minHeight: 42, maxWidth: 220, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(230,192,122,.24)', backgroundColor: 'rgba(230,192,122,.08)', paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
@@ -3591,6 +3733,7 @@ const styles = StyleSheet.create({
   profileAvatarLarge: { width: 96, height: 96, borderRadius: 24, backgroundColor: '#33412E', alignItems: 'center', justifyContent: 'center', borderWidth: 3, borderColor: '#7D8B58' },
   profileAvatarText: { color: '#F4F0E6', fontWeight: '900', fontSize: 36 },
   profileLogo: { width: 96, height: 96, borderRadius: 20, borderWidth: 3, borderColor: '#1B241C' },
+  profileStoryRing: { borderRadius: 24, borderWidth: 2, borderColor: '#E6C07A', padding: 3 },
   statusDot: { position: 'absolute', width: 18, height: 18, borderRadius: 9, right: 1, bottom: 5, borderWidth: 3, borderColor: '#1B241C' },
   customStatusBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(230,192,122,.24)', backgroundColor: 'rgba(63,63,70,.78)', paddingHorizontal: 12, paddingVertical: 9, marginBottom: 10 },
   customStatusBannerCompact: { marginBottom: 4, paddingHorizontal: 10, paddingVertical: 8 },

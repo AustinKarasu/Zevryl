@@ -813,7 +813,7 @@ app.get('/health', async () => {
 });
 
 app.post('/auth/register', { config: { rateLimit: authRateLimit } }, async request => {
-  const body = z.object({ fullName: z.string().min(2), email, username: z.string().min(3), password: z.string().min(8) }).parse(request.body);
+  const body = z.object({ fullName: z.string().min(2), email, username: z.string().trim().min(3).max(30).regex(/^[a-z0-9._-]+$/i), password: z.string().min(8) }).parse(request.body);
   const id = crypto.randomUUID();
   const discriminator = String(Math.floor(1000 + Math.random() * 9000));
   await pool.query('insert into users (id,email,username,discriminator,password_hash,display_name,presence,active_at,last_ip) values ($1,$2,$3,$4,$5,$6,$7,now(),$8)', [id, body.email, body.username.toLowerCase(), discriminator, await argon2.hash(body.password), body.fullName, 'online', request.ip]);
@@ -992,7 +992,7 @@ app.patch('/me/profile', async request => {
 });
 
 app.patch('/me/account', async request => {
-  const body = z.object({ username: z.string().min(3).optional(), discriminator: z.string().min(4).max(8).optional(), mobile: z.string().optional(), alternateEmail: z.string().email().optional() }).parse(request.body);
+  const body = z.object({ username: z.string().trim().min(3).max(30).regex(/^[a-z0-9._-]+$/i).optional(), discriminator: z.string().regex(/^\d{4,5}$/).optional(), mobile: z.string().optional(), alternateEmail: z.string().email().optional() }).parse(request.body);
   const row = (await pool.query(
     `update users set username=coalesce($2,username), discriminator=coalesce($3,discriminator), mobile=$4, alternate_email=$5, updated_at=now() where id=$1 returning *`,
     [request.auth!.id, body.username?.toLowerCase(), body.discriminator, body.mobile, body.alternateEmail?.toLowerCase()]
@@ -1070,7 +1070,7 @@ app.get('/users/search', async request => {
 });
 
 app.post('/friends/request', async request => {
-  const body = z.object({ username: z.string().min(3) }).parse(request.body);
+  const body = z.object({ username: z.string().trim().min(3).max(36).regex(/^[a-z0-9._-]{3,30}(#\d{1,5})?$/i) }).parse(request.body);
   const [rawName, discriminator] = body.username.toLowerCase().split('#');
   const target = (await pool.query('select id from users where username=$1 and ($2::text is null or discriminator=$2)', [rawName, discriminator ?? null])).rows[0];
   if (!target) throw app.httpErrors.notFound('User not found.');
@@ -1385,6 +1385,14 @@ app.post('/stories/:id/comments', async request => {
   await pool.query('insert into story_comments (id,story_id,user_id,body) values ($1,$2,$3,$4)', [crypto.randomUUID(), params.id, request.auth!.id, body.body]);
   await audit(request.auth!.id, 'story.comment', 'story', params.id);
   return storyWithComments(story);
+});
+
+app.delete('/stories/:id', async request => {
+  const params = z.object({ id: uuid }).parse(request.params);
+  const row = (await pool.query('delete from stories where id=$1 and user_id=$2 returning id', [params.id, request.auth!.id])).rows[0];
+  if (!row) throw app.httpErrors.notFound('Story not found.');
+  await audit(request.auth!.id, 'story.delete', 'story', params.id);
+  return { ok: true };
 });
 
 app.get('/gifs/search', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async request => {
@@ -1865,7 +1873,7 @@ app.post('/admin/users/role', async request => {
 
 app.post('/admin/users/update', async request => {
   requireRole(request, ['admin']);
-  const body = z.object({ username: z.string(), newUsername: z.string().optional(), discriminator: z.string().optional(), mobile: z.string().optional(), alternateEmail: z.string().email().optional(), newPassword: z.string().min(8).optional(), resetUsernameLimit: z.boolean().optional() }).parse(request.body);
+  const body = z.object({ username: z.string(), newUsername: z.string().trim().min(3).max(30).regex(/^[a-z0-9._-]+$/i).optional(), discriminator: z.string().regex(/^\d{4,5}$/).optional(), mobile: z.string().optional(), alternateEmail: z.string().email().optional(), newPassword: z.string().min(8).optional(), resetUsernameLimit: z.boolean().optional() }).parse(request.body);
   const target = await findUserForAdmin(body.username);
   if (!target) throw app.httpErrors.notFound('User not found.');
   const passwordHash = body.newPassword ? await argon2.hash(body.newPassword) : undefined;

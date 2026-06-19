@@ -291,6 +291,7 @@ export const api = {
   stories: () => request<Story[]>('/stories'),
   createStory: (payload: { mediaUrl: string; mediaType: Story['mediaType']; caption?: string; mentionUserId?: string; allowComments?: boolean; durationMs?: number }) =>
     request<Story>('/stories', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteStory: (id: string) => request(`/stories/${id}`, { method: 'DELETE' }),
   commentStory: (id: string, body: string) =>
     request<Story>(`/stories/${id}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
   searchPeople: (q: string) => request<User[]>(`/users/search?q=${encodeURIComponent(q)}`),
