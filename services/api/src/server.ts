@@ -14,6 +14,7 @@ import { createWriteStream } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import nodemailer from 'nodemailer';
 import pg from 'pg';
 import { z } from 'zod';
 
@@ -37,6 +38,11 @@ const env = {
   publicAppUrl: process.env.PUBLIC_APP_URL ?? 'https://github.com/AustinKarasu/Zevryl/releases/latest',
   resendApiKey: process.env.RESEND_API_KEY ?? '',
   mailFrom: process.env.MAIL_FROM ?? 'Zevryl <noreply@zevryl.app>',
+  smtpHost: process.env.SMTP_HOST ?? '',
+  smtpPort: Number(process.env.SMTP_PORT ?? 587),
+  smtpUser: process.env.SMTP_USER ?? '',
+  smtpPass: process.env.SMTP_PASS ?? '',
+  smtpSecure: ['1', 'true', 'yes'].includes(String(process.env.SMTP_SECURE ?? '').toLowerCase()),
   databasePoolMax: Number(process.env.DATABASE_POOL_MAX ?? 40),
   giphyApiKey: process.env.GIPHY_API_KEY ?? '',
   tenorApiKey: process.env.TENOR_API_KEY ?? '',
@@ -283,6 +289,7 @@ async function migrate() {
     alter table users add column if not exists dm_policy text not null default 'friends';
     alter table users add column if not exists profile_links boolean not null default true;
     alter table users add column if not exists two_factor_secret text;
+    alter table users add column if not exists email_verified boolean not null default true;
     alter table users add column if not exists muted_until timestamptz;
     alter table sessions add column if not exists created_at timestamptz not null default now();
     alter table messages add column if not exists pinned boolean not null default false;
@@ -457,7 +464,31 @@ async function sendRecoveryEmail(to: string, recoveryUrl: string) {
   });
 }
 
+let smtpTransport: nodemailer.Transporter | null = null;
+
+function getSmtpTransport() {
+  if (!env.smtpHost) return null;
+  if (!smtpTransport) {
+    smtpTransport = nodemailer.createTransport({
+      host: env.smtpHost,
+      port: env.smtpPort,
+      secure: env.smtpSecure,
+      auth: env.smtpUser || env.smtpPass ? { user: env.smtpUser, pass: env.smtpPass } : undefined
+    });
+  }
+  return smtpTransport;
+}
+
+function mailDeliveryConfigured() {
+  return Boolean(env.smtpHost || env.resendApiKey);
+}
+
 async function sendEmail({ to, subject, text }: { to: string; subject: string; text: string }) {
+  const smtp = getSmtpTransport();
+  if (smtp) {
+    await smtp.sendMail({ from: env.mailFrom, to, subject, text });
+    return true;
+  }
   if (!env.resendApiKey) return false;
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -473,6 +504,61 @@ async function sendEmail({ to, subject, text }: { to: string; subject: string; t
     })
   });
   return response.ok;
+}
+
+async function sendOtpEmail(to: string, code: string, purpose: 'register' | 'login') {
+  const subject = purpose === 'register' ? 'Verify your Zevryl account' : 'Your Zevryl login code';
+  const text = [
+    purpose === 'register' ? 'Use this code to verify your Zevryl account.' : 'Use this code to finish signing in to Zevryl.',
+    '',
+    code,
+    '',
+    'This code expires in 10 minutes. If you did not request it, you can ignore this email.'
+  ].join('\n');
+  return sendEmail({ to, subject, text });
+}
+
+async function createOtpChallenge(user: any, purpose: 'register' | 'login') {
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const otpToken = randomBytes(32).toString('base64url');
+  await redis.setex(`auth:otp:${otpToken}`, 10 * 60, JSON.stringify({
+    userId: user.id,
+    purpose,
+    codeHash: hashToken(code),
+    attempts: 0
+  }));
+  const delivered = await sendOtpEmail(user.email, code, purpose).catch(() => false);
+  return { otpRequired: true, otpToken, delivery: delivered ? 'email' : 'unavailable' };
+}
+
+async function issueAuthSession(userRow: any, request: any) {
+  await pool.query('update users set presence=$1, active_at=now(), last_ip=$2 where id=$3', ['online', request.ip, userRow.id]);
+  const fresh = (await pool.query('select * from users where id=$1', [userRow.id])).rows[0];
+  const user = toUser(fresh);
+  const accessToken = await sign({ id: user.id, role: user.role }, 'access');
+  const refreshToken = await sign({ id: user.id, role: user.role }, 'refresh');
+  await pool.query('insert into sessions (id,user_id,refresh_token_hash,device_name,user_agent,ip_address) values ($1,$2,$3,$4,$5,$6)', [crypto.randomUUID(), user.id, await argon2.hash(refreshToken), requestDeviceName(request), request.headers['user-agent'], request.ip]);
+  return { user, accessToken, refreshToken };
+}
+
+async function assertLoginNotLocked(identity: string, ip: string) {
+  const key = `auth:login:${identity}:${ip}`;
+  const attempts = Number(await redis.get(key) ?? 0);
+  if (attempts >= 5) {
+    const ttl = await redis.ttl(key);
+    throw app.httpErrors.tooManyRequests(`Too many login attempts. Try again in ${Math.max(1, Math.ceil(ttl / 60))} minute(s).`);
+  }
+}
+
+async function recordFailedLogin(identity: string, ip: string) {
+  const key = `auth:login:${identity}:${ip}`;
+  const attempts = await redis.incr(key);
+  if (attempts === 1) await redis.expire(key, 15 * 60);
+  if (attempts >= 5) throw app.httpErrors.tooManyRequests('Too many login attempts. Try again in 15 minutes.');
+}
+
+async function clearFailedLogin(identity: string, ip: string) {
+  await redis.del(`auth:login:${identity}:${ip}`);
 }
 
 function requestDeviceName(request: any) {
@@ -816,28 +902,35 @@ app.post('/auth/register', { config: { rateLimit: authRateLimit } }, async reque
   const body = z.object({ fullName: z.string().min(2), email, username: z.string().trim().min(3).max(30).regex(/^[a-z0-9._-]+$/i), password: z.string().min(8) }).parse(request.body);
   const id = crypto.randomUUID();
   const discriminator = String(Math.floor(1000 + Math.random() * 9000));
-  await pool.query('insert into users (id,email,username,discriminator,password_hash,display_name,presence,active_at,last_ip) values ($1,$2,$3,$4,$5,$6,$7,now(),$8)', [id, body.email, body.username.toLowerCase(), discriminator, await argon2.hash(body.password), body.fullName, 'online', request.ip]);
-  const user = toUser((await pool.query('select * from users where id=$1', [id])).rows[0]);
-  const accessToken = await sign({ id, role: user.role }, 'access');
-  const refreshToken = await sign({ id, role: user.role }, 'refresh');
-  await pool.query('insert into sessions (id,user_id,refresh_token_hash,device_name,user_agent,ip_address) values ($1,$2,$3,$4,$5,$6)', [crypto.randomUUID(), id, await argon2.hash(refreshToken), requestDeviceName(request), request.headers['user-agent'], request.ip]);
+  await pool.query('insert into users (id,email,username,discriminator,password_hash,display_name,presence,active_at,last_ip,email_verified) values ($1,$2,$3,$4,$5,$6,$7,now(),$8,$9)', [id, body.email, body.username.toLowerCase(), discriminator, await argon2.hash(body.password), body.fullName, mailDeliveryConfigured() ? 'offline' : 'online', request.ip, !mailDeliveryConfigured()]);
+  const user = (await pool.query('select * from users where id=$1', [id])).rows[0];
   await audit(id, 'auth.register', 'user', id);
-  return { user, accessToken, refreshToken };
+  if (!mailDeliveryConfigured()) {
+    await audit(id, 'auth.otp_skipped_mail_unconfigured', 'user', id);
+    return issueAuthSession(user, request);
+  }
+  return createOtpChallenge(user, 'register');
 });
 
 app.post('/auth/login', { config: { rateLimit: authRateLimit } }, async request => {
   const body = z.object({ emailOrUsername: z.string().min(1), password: z.string().min(1) }).parse(request.body);
-  const result = await pool.query('select * from users where (email=$1 or username=$1) and is_banned=false', [body.emailOrUsername.toLowerCase()]);
+  const identity = body.emailOrUsername.toLowerCase().trim();
+  await assertLoginNotLocked(identity, request.ip);
+  const result = await pool.query('select * from users where (email=$1 or username=$1) and is_banned=false', [identity]);
   const row = result.rows[0];
-  if (!row || !(await argon2.verify(row.password_hash, body.password))) throw app.httpErrors.unauthorized('Email or password is incorrect.');
-  await pool.query('update users set presence=$1, active_at=now(), last_ip=$2 where id=$3', ['online', request.ip, row.id]);
-  const user = toUser({ ...row, presence: 'online', active_at: new Date().toISOString(), last_ip: request.ip });
-  const accessToken = await sign({ id: user.id, role: user.role }, 'access');
-  const refreshToken = await sign({ id: user.id, role: user.role }, 'refresh');
-  await pool.query('insert into sessions (id,user_id,refresh_token_hash,device_name,user_agent,ip_address) values ($1,$2,$3,$4,$5,$6)', [crypto.randomUUID(), user.id, await argon2.hash(refreshToken), requestDeviceName(request), request.headers['user-agent'], request.ip]);
-  await audit(user.id, 'auth.login', 'user', user.id);
-  sendLoginAlert(row, request).catch(() => undefined);
-  return { user, accessToken, refreshToken };
+  if (!row || !(await argon2.verify(row.password_hash, body.password))) {
+    await recordFailedLogin(identity, request.ip);
+    throw app.httpErrors.unauthorized('Email or password is incorrect.');
+  }
+  await clearFailedLogin(identity, request.ip);
+  if (!mailDeliveryConfigured()) {
+    await audit(row.id, 'auth.otp_skipped_mail_unconfigured', 'user', row.id);
+    const session = await issueAuthSession(row, request);
+    await audit(row.id, 'auth.login', 'user', row.id);
+    sendLoginAlert(row, request).catch(() => undefined);
+    return session;
+  }
+  return createOtpChallenge(row, row.email_verified === false ? 'register' : 'login');
 });
 
 app.post('/auth/refresh', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async request => {
@@ -904,8 +997,41 @@ app.post('/auth/reset-password', async request => {
   await audit(row.user_id, 'recovery.password_reset', 'user', row.user_id);
   return { ok: true };
 });
-app.post('/auth/otp/request', async () => ({ ok: true }));
-app.post('/auth/otp/verify', async () => ({ ok: true }));
+app.post('/auth/otp/request', { config: { rateLimit: recoveryRateLimit } }, async request => {
+  const body = z.object({ otpToken: z.string().min(20) }).parse(request.body);
+  const raw = await redis.get(`auth:otp:${body.otpToken}`);
+  if (!raw) throw app.httpErrors.badRequest('Code expired. Please sign in again.');
+  const challenge = JSON.parse(raw) as { userId: string; purpose: 'register' | 'login'; codeHash: string; attempts: number };
+  const user = (await pool.query('select * from users where id=$1 and is_banned=false', [challenge.userId])).rows[0];
+  if (!user) throw app.httpErrors.badRequest('Code expired. Please sign in again.');
+  await redis.del(`auth:otp:${body.otpToken}`);
+  return createOtpChallenge(user, challenge.purpose);
+});
+
+app.post('/auth/otp/verify', { config: { rateLimit: authRateLimit } }, async request => {
+  const body = z.object({ otpToken: z.string().min(20), code: z.string().regex(/^\d{6}$/) }).parse(request.body);
+  const key = `auth:otp:${body.otpToken}`;
+  const raw = await redis.get(key);
+  if (!raw) throw app.httpErrors.badRequest('Code expired. Please sign in again.');
+  const challenge = JSON.parse(raw) as { userId: string; purpose: 'register' | 'login'; codeHash: string; attempts: number };
+  if (challenge.attempts >= 5) {
+    await redis.del(key);
+    throw app.httpErrors.tooManyRequests('Too many code attempts. Please sign in again.');
+  }
+  if (hashToken(body.code) !== challenge.codeHash) {
+    challenge.attempts += 1;
+    await redis.setex(key, 10 * 60, JSON.stringify(challenge));
+    throw app.httpErrors.unauthorized('Code is incorrect.');
+  }
+  await redis.del(key);
+  if (challenge.purpose === 'register') await pool.query('update users set email_verified=true where id=$1', [challenge.userId]);
+  const user = (await pool.query('select * from users where id=$1 and is_banned=false', [challenge.userId])).rows[0];
+  if (!user) throw app.httpErrors.badRequest('Code expired. Please sign in again.');
+  const result = await issueAuthSession(user, request);
+  await audit(user.id, challenge.purpose === 'register' ? 'auth.register_verified' : 'auth.login', 'user', user.id);
+  if (challenge.purpose === 'login') sendLoginAlert(user, request).catch(() => undefined);
+  return result;
+});
 app.post('/auth/logout', async request => {
   await requireAuth(request);
   await pool.query('update users set presence=$1 where id=$2', ['offline', request.auth!.id]);

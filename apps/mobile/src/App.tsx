@@ -574,6 +574,9 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
   const [confirm, setConfirm] = useState('');
   const [twoFactorCode, setTwoFactorCode] = useState('');
   const [needs2fa, setNeeds2fa] = useState(false);
+  const [otpToken, setOtpToken] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [otpDelivery, setOtpDelivery] = useState('');
   const [busy, setBusy] = useState(false);
 
   async function submit() {
@@ -585,6 +588,14 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
       const result = mode === 'login'
         ? await api.login(email, password, twoFactorCode || undefined)
         : await api.register({ fullName, email, username, password });
+      if (result.otpRequired && result.otpToken) {
+        setOtpToken(result.otpToken);
+        setOtpDelivery(result.delivery || '');
+        setOtpCode('');
+        notify(result.delivery === 'email' ? 'success' : 'info', result.delivery === 'email' ? 'Verification code sent to your email.' : 'OTP created, but email delivery is not configured.');
+        return;
+      }
+      if (!result.user || !result.accessToken || !result.refreshToken) throw new Error('Sign in needs verification.');
       await onDone(result.user, result.accessToken, result.refreshToken);
       notify('success', 'Signed in.');
     } catch (error) {
@@ -594,6 +605,35 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
     } finally {
       setBusy(false);
     }
+  }
+
+  async function verifyOtp() {
+    if (!otpToken) return notify('error', 'Please sign in again.');
+    if (!/^\d{6}$/.test(otpCode)) return notify('error', 'Enter the 6-digit code.');
+    setBusy(true);
+    try {
+      const result = await api.verifyOtp({ otpToken, code: otpCode });
+      setOtpToken('');
+      setOtpCode('');
+      await onDone(result.user, result.accessToken, result.refreshToken);
+      notify('success', 'Verified and signed in.');
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : 'Could not verify code.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resendOtp() {
+    if (!otpToken) return notify('error', 'Please sign in again.');
+    await api.resendOtp(otpToken)
+      .then(result => {
+        setOtpToken(result.otpToken);
+        setOtpDelivery(result.delivery || '');
+        setOtpCode('');
+        notify(result.delivery === 'email' ? 'success' : 'info', result.delivery === 'email' ? 'New code sent.' : 'OTP refreshed, but email delivery is not configured.');
+      })
+      .catch(error => notify('error', error.message));
   }
 
   async function forgotPassword() {
@@ -609,17 +649,29 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
         <View style={styles.authPanel}>
           <Image source={wordmark} style={styles.authWordmark} resizeMode="contain" />
           <Text style={styles.authText}>A grounded Terria workspace for friends, staff, updates, and secure DMs.</Text>
-          {mode === 'register' && <Field icon="person" placeholder="Full name" value={fullName} onChangeText={setFullName} />}
-          <Field icon="mail" placeholder="Email or username" value={email} onChangeText={setEmail} autoCapitalize="none" />
-          {mode === 'register' && <Field icon="at" placeholder="Username" value={username} onChangeText={setUsername} autoCapitalize="none" />}
-          <Field icon="lock-closed" placeholder="Password" value={password} onChangeText={setPassword} secureTextEntry />
-          {mode === 'login' && needs2fa && <Field icon="keypad" placeholder="Authenticator code" value={twoFactorCode} onChangeText={setTwoFactorCode} keyboardType="number-pad" />}
-          {mode === 'register' && <Field icon="shield-checkmark" placeholder="Confirm password" value={confirm} onChangeText={setConfirm} secureTextEntry />}
-          {mode === 'login' && <Pressable onPress={forgotPassword}><Text style={styles.link}>Forgot password?</Text></Pressable>}
-          <PrimaryButton label={mode === 'login' ? 'Login' : 'Create Account'} icon={mode === 'login' ? 'arrow-forward' : 'person-add'} busy={busy} onPress={submit} />
-          <Pressable onPress={() => setMode(mode === 'login' ? 'register' : 'login')} style={styles.switchAuth}>
-            <Text style={styles.muted}>{mode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Login'}</Text>
-          </Pressable>
+          {otpToken ? (
+            <>
+              <Text style={styles.muted}>{otpDelivery === 'email' ? 'Enter the 6-digit code sent to your email.' : 'Email delivery is not configured. Add SMTP settings on the server, then resend.'}</Text>
+              <Field icon="keypad" placeholder="6-digit code" value={otpCode} onChangeText={(value) => setOtpCode(value.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" maxLength={6} />
+              <PrimaryButton label="Verify Code" icon="shield-checkmark" busy={busy} onPress={verifyOtp} />
+              <SecondaryButton label="Resend Code" icon="mail" onPress={resendOtp} />
+              <Pressable onPress={() => { setOtpToken(''); setOtpCode(''); }} style={styles.switchAuth}><Text style={styles.muted}>Back to sign in</Text></Pressable>
+            </>
+          ) : (
+            <>
+              {mode === 'register' && <Field icon="person" placeholder="Full name" value={fullName} onChangeText={setFullName} />}
+              <Field icon="mail" placeholder="Email or username" value={email} onChangeText={setEmail} autoCapitalize="none" />
+              {mode === 'register' && <Field icon="at" placeholder="Username" value={username} onChangeText={setUsername} autoCapitalize="none" maxLength={30} />}
+              <Field icon="lock-closed" placeholder="Password" value={password} onChangeText={setPassword} secureTextEntry />
+              {mode === 'login' && needs2fa && <Field icon="keypad" placeholder="Authenticator code" value={twoFactorCode} onChangeText={setTwoFactorCode} keyboardType="number-pad" />}
+              {mode === 'register' && <Field icon="shield-checkmark" placeholder="Confirm password" value={confirm} onChangeText={setConfirm} secureTextEntry />}
+              {mode === 'login' && <Pressable onPress={forgotPassword}><Text style={styles.link}>Forgot password?</Text></Pressable>}
+              <PrimaryButton label={mode === 'login' ? 'Login' : 'Create Account'} icon={mode === 'login' ? 'arrow-forward' : 'person-add'} busy={busy} onPress={submit} />
+              <Pressable onPress={() => setMode(mode === 'login' ? 'register' : 'login')} style={styles.switchAuth}>
+                <Text style={styles.muted}>{mode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Login'}</Text>
+              </Pressable>
+            </>
+          )}
         </View>
         <NoticeFooter notice={notice} bottom={24} />
       </SafeAreaView>

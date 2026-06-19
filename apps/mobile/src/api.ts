@@ -245,15 +245,19 @@ async function uploadFile(asset: { uri: string; name?: string | null; mimeType?:
 export const api = {
   url: configuredUrl ?? 'Not configured',
   login: (emailOrUsername: string, password: string, twoFactorCode?: string) =>
-    request<{ user: User; accessToken: string; refreshToken: string }>('/auth/login', {
+    request<{ user?: User; accessToken?: string; refreshToken?: string; otpRequired?: boolean; otpToken?: string; delivery?: string }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ emailOrUsername, password, twoFactorCode })
     }),
   register: (payload: { fullName: string; email: string; username: string; password: string }) =>
-    request<{ user: User; accessToken: string; refreshToken: string }>('/auth/register', {
+    request<{ user?: User; accessToken?: string; refreshToken?: string; otpRequired?: boolean; otpToken?: string; delivery?: string }>('/auth/register', {
       method: 'POST',
       body: JSON.stringify(payload)
     }),
+  verifyOtp: (payload: { otpToken: string; code: string }) =>
+    request<{ user: User; accessToken: string; refreshToken: string }>('/auth/otp/verify', { method: 'POST', body: JSON.stringify(payload) }),
+  resendOtp: (otpToken: string) =>
+    request<{ otpRequired: boolean; otpToken: string; delivery?: string }>('/auth/otp/request', { method: 'POST', body: JSON.stringify({ otpToken }) }),
   me: () => request<User>('/me'),
   updateProfile: (payload: Partial<Pick<User, 'displayName' | 'bio' | 'pronouns' | 'customStatus' | 'profileColor' | 'profileTheme' | 'density' | 'avatarUrl' | 'bannerUrl' | 'presence' | 'language'>>) =>
     request<User>('/me/profile', { method: 'PATCH', body: JSON.stringify(payload) }),
