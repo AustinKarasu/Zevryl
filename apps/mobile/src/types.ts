@@ -53,6 +53,7 @@ export type Group = {
   name: string;
   description: string;
   ownerId: string;
+  conversationId?: string;
   visibility?: 'private' | 'public';
   inviteCode?: string;
   voiceLimit?: number;

@@ -105,16 +105,22 @@ const densityChoices = {
   spacious: { label: 'Spacious', scale: 1.18 }
 };
 const gifs = [
-  'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExb2d4MzgzdTBqOWc3eGxxZGNzYnRydjF0dDhtczlmbzhmOWUwajU2MiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/111ebonMs90YLu/giphy.gif',
-  'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExZmRnOWlzZ2l3enV4Mmpyc2t6Zm82dzV5N2Vzd3NlNXQ2Ynpmb3pyNCZlcD12MV9naWZzX3NlYXJjaCZjdD1n/l0HlNaQ6gWfllcjDO/giphy.gif',
-  'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExYnV3d2VudnV3enVscnE2djZxa2U5bXF0OWM1eXo0d3hnMHU3bHVqNCZlcD12MV9naWZzX3NlYXJjaCZjdD1n/26ufdipQqU2lhNA4g/giphy.gif',
-  'https://media.giphy.com/media/3o7TKtnuHOHHUjR38Y/giphy.gif',
-  'https://media.giphy.com/media/5GoVLqeAOo6PK/giphy.gif',
-  'https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif',
-  'https://media.giphy.com/media/ely3apij36BJhoZ234/giphy.gif',
-  'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif',
-  'https://media.giphy.com/media/3oz8xIsloV7zOmt81G/giphy.gif',
-  'https://media.giphy.com/media/26tOZ42Mg6pbTUPHW/giphy.gif'
+  { url: 'https://media.giphy.com/media/111ebonMs90YLu/giphy.gif', tags: 'hi hello wave yes hey welcome' },
+  { url: 'https://media.giphy.com/media/l0HlNaQ6gWfllcjDO/giphy.gif', tags: 'hi hello excited happy' },
+  { url: 'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif', tags: 'wow surprise mind blown' },
+  { url: 'https://media.giphy.com/media/3o7TKtnuHOHHUjR38Y/giphy.gif', tags: 'no noob nope stop' },
+  { url: 'https://media.giphy.com/media/5GoVLqeAOo6PK/giphy.gif', tags: 'happy excited win gg' },
+  { url: 'https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif', tags: 'bruh noob fail gaming' },
+  { url: 'https://media.giphy.com/media/ely3apij36BJhoZ234/giphy.gif', tags: 'laugh lol funny' },
+  { url: 'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif', tags: 'nice cool yes' },
+  { url: 'https://media.giphy.com/media/3oz8xIsloV7zOmt81G/giphy.gif', tags: 'facepalm fail noob' },
+  { url: 'https://media.giphy.com/media/26tOZ42Mg6pbTUPHW/giphy.gif', tags: 'angry mad frustrated' },
+  { url: 'https://media.giphy.com/media/13CoXDiaCcCoyk/giphy.gif', tags: 'pride rainbow gay love support' },
+  { url: 'https://media.giphy.com/media/3o6Zt481isNVuQI1l6/giphy.gif', tags: 'love heart pride' },
+  { url: 'https://media.giphy.com/media/3oriO0OEd9QIDdllqo/giphy.gif', tags: 'confused what huh' },
+  { url: 'https://media.giphy.com/media/ASd0Ukj0y3qMM/giphy.gif', tags: 'ok okay yes' },
+  { url: 'https://media.giphy.com/media/11sBLVxNs7v6WA/giphy.gif', tags: 'celebrate party win' },
+  { url: 'https://media.giphy.com/media/kaq6GnxDlJaBq/giphy.gif', tags: 'noob confused gaming' }
 ];
 const languages = [
   ['en', 'English'], ['hi', 'Hindi'], ['bn', 'Bengali'], ['ta', 'Tamil'], ['te', 'Telugu'], ['mr', 'Marathi'], ['gu', 'Gujarati'], ['kn', 'Kannada'], ['ml', 'Malayalam'], ['pa', 'Punjabi'],
@@ -162,7 +168,7 @@ function Root() {
   useEffect(() => {
     api.latestUpdate()
       .then(update => {
-        if (!update?.version || update.version === '0.1.18') return;
+        if (!update?.version || update.version === '1.0.0') return;
         const key = `zevryl.update.seen.${update.version}`;
         SecureStore.getItemAsync(key).then(seen => {
           if (!seen) {
@@ -216,6 +222,7 @@ function Root() {
             setShowAnnouncement,
             setTab,
             notify: showNotice,
+            setPendingConversationId,
             pendingConversationId
           })}
         </View>
@@ -247,6 +254,7 @@ function renderTab(
     setShowAnnouncement: (v: boolean) => void;
     setTab: (tab: AppTab) => void;
     notify: (tone: 'error' | 'success' | 'info', text: string) => void;
+    setPendingConversationId: (id: string | undefined) => void;
     pendingConversationId?: string;
   }
 ) {
@@ -254,7 +262,7 @@ function renderTab(
   if (tab === 'staff' && user.role !== 'staff' && user.role !== 'admin') return <LockedScreen title="Staff only" />;
   if (tab === 'home') return <HomeScreen user={user} notify={tools.notify} setTab={tools.setTab} />;
   if (tab === 'friends') return <FriendsScreen notify={tools.notify} setTab={tools.setTab} />;
-  if (tab === 'groups') return <GroupsScreen user={user} notify={tools.notify} />;
+  if (tab === 'groups') return <GroupsScreen user={user} notify={tools.notify} setTab={tools.setTab} openConversation={tools.setPendingConversationId} />;
   if (tab === 'chats') return <ChatScreen user={user} notify={tools.notify} initialConversationId={tools.pendingConversationId} />;
   if (tab === 'profile') return <ProfileScreen user={user} setUser={tools.setUser} notify={tools.notify} />;
   if (tab === 'settings') return <SettingsScreen user={user} setTab={tools.setTab} setUser={tools.setUser} notify={tools.notify} />;
@@ -492,7 +500,7 @@ function FriendsScreen({ notify, setTab }: { notify: (tone: 'error' | 'success' 
   );
 }
 
-function GroupsScreen({ user, notify }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
+function GroupsScreen({ user, notify, setTab, openConversation }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void; setTab: (tab: AppTab) => void; openConversation: (id: string | undefined) => void }) {
   const [groups, setGroups] = useState<Loadable<Group[]>>({ loading: true, data: [] });
   const [friends, setFriends] = useState<FriendState>(emptyFriends);
   const [name, setName] = useState('');
@@ -504,6 +512,7 @@ function GroupsScreen({ user, notify }: { user: User; notify: (tone: 'error' | '
   const [videoLimit, setVideoLimit] = useState('10');
   const [deleteTarget, setDeleteTarget] = useState<Group | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [memberGroup, setMemberGroup] = useState<Group | null>(null);
 
   const load = () => Promise.all([api.groups(), api.friends()])
     .then(([groupData, friendData]) => { setGroups({ loading: false, data: groupData }); setFriends(friendData); })
@@ -525,15 +534,11 @@ function GroupsScreen({ user, notify }: { user: User; notify: (tone: 'error' | '
       .then(() => { setDeleteTarget(null); setDeleteConfirm(''); notify('success', 'Group deleted.'); load(); })
       .catch(error => notify('error', error.message));
   }
-  async function ticketAction(ticket: Ticket, action: 'close' | 'reopen') {
-    await api.updateTicket(ticket.id, { action })
-      .then(load)
-      .catch(error => notify('error', error.message));
-  }
-  async function download(ticket: Ticket) {
-    await api.downloadTicket(ticket.id)
-      .then(text => shareTextFile(`zevryl-ticket-${ticket.id}.txt`, text, notify))
-      .catch(error => notify('error', error.message));
+
+  function openGroupChat(group: Group) {
+    if (!group.conversationId) return notify('error', 'Group chat is still being prepared. Refresh and try again.');
+    openConversation(group.conversationId);
+    setTab('chats');
   }
 
   return (
@@ -546,7 +551,7 @@ function GroupsScreen({ user, notify }: { user: User; notify: (tone: 'error' | '
         </View>
       </View>
       {groups.loading ? <LoadingState /> : groups.error ? <ErrorState message={groups.error} onRetry={load} /> : groups.data.map(group => (
-        <GlassCard key={group.id} style={styles.listCard}><Text style={styles.cardTitle}>{group.name}</Text><Text style={styles.muted}>{group.description || 'No description yet.'}</Text><Text style={styles.badge}>{group.visibility === 'public' ? 'Public' : 'Private'} - {group.memberCount} members - voice {group.voiceLimit ?? 25} - video {group.videoLimit ?? 10}</Text><View style={styles.ticketActions}><SecondaryButton label="Open Chat" icon="chatbubbles" onPress={() => notify('info', 'Open Messages and choose this group conversation.')} /><SecondaryButton label="Invite" icon="link" onPress={() => api.groupInvite(group.id).then(invite => Clipboard.setStringAsync(invite.inviteUrl).then(() => notify('success', 'Invite link copied.'))).catch(error => notify('error', error.message))} />{group.ownerId === user.id ? <SecondaryButton label="Delete" icon="trash" onPress={() => setDeleteTarget(group)} /> : null}</View></GlassCard>
+        <GlassCard key={group.id} style={styles.listCard}><Text style={styles.cardTitle}>{group.name}</Text><Text style={styles.muted}>{group.description || 'No description yet.'}</Text><Text style={styles.badge}>{group.visibility === 'public' ? 'Public' : 'Private'} - {group.memberCount} members - voice {group.voiceLimit ?? 25} - video {group.videoLimit ?? 10}</Text><View style={styles.ticketActions}><SecondaryButton label="Open Chat" icon="chatbubbles" onPress={() => openGroupChat(group)} /><SecondaryButton label="Members" icon="people" onPress={() => setMemberGroup(group)} /><SecondaryButton label="Invite" icon="link" onPress={() => api.groupInvite(group.id).then(invite => Clipboard.setStringAsync(invite.inviteUrl).then(() => notify('success', 'Invite link copied.'))).catch(error => notify('error', error.message))} />{group.ownerId === user.id ? <SecondaryButton label="Delete" icon="trash" onPress={() => setDeleteTarget(group)} /> : null}</View></GlassCard>
       ))}
       {groups.data.length === 0 && !groups.loading && <EmptyState title="No groups yet" body="Create a group after adding at least one friend." />}
       <Modal visible={showCreate} transparent animationType="slide">
@@ -579,6 +584,16 @@ function GroupsScreen({ user, notify }: { user: User; notify: (tone: 'error' | '
           </View>
         </View>
       </Modal>
+      <Modal visible={Boolean(memberGroup)} transparent animationType="slide">
+        <View style={styles.sheetBackdrop}>
+          <View style={styles.editorPanel}>
+            <View style={styles.editorHeader}><Text style={[styles.cardTitle, { flex: 1 }]}>{memberGroup?.name} Members</Text><IconButton icon="close" onPress={() => setMemberGroup(null)} /></View>
+            <Text style={styles.muted}>{memberGroup?.memberCount ?? 0} members are in this group.</Text>
+            <View style={styles.memberPick}><UserAvatar user={user} size={34} /><View style={styles.flex}><Text style={styles.body}>{user.displayName}</Text><Text style={styles.meta}>{memberGroup?.ownerId === user.id ? 'Owner' : 'Member'}</Text></View><StatusPill presence={user.presence} /></View>
+            <Text style={styles.muted}>Open the group chat to see active members in the conversation header.</Text>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -597,6 +612,8 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
   const [profileUser, setProfileUser] = useState<User | null>(null);
   const [reportReason, setReportReason] = useState('');
   const [reportProof, setReportProof] = useState('');
+  const [activeCall, setActiveCall] = useState<{ kind: 'voice' | 'video'; roomName: string; url?: string; token?: string; joined: boolean } | null>(null);
+  const [showMembers, setShowMembers] = useState(false);
   const messageScrollRef = useRef<ScrollView | null>(null);
 
   const loadConversations = () => api.conversations()
@@ -704,12 +721,15 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
   async function startCall(kind: 'voice' | 'video') {
     if (!selected) return;
     await api.callToken(`${kind}-${selected.id}`)
-      .then(result => notify('success', `${kind === 'voice' ? 'Voice' : 'Video'} room ready: ${result.roomName}. ${selected.participants.length} member${selected.participants.length === 1 ? '' : 's'} in this conversation.`))
+      .then(result => {
+        setActiveCall({ kind, roomName: result.roomName, url: result.url, token: result.token, joined: false });
+        notify('success', `${kind === 'voice' ? 'Voice' : 'Video'} invite sent.`);
+      })
       .catch(error => notify('error', error.message));
   }
 
   const emojiChoices = emojis.filter(item => !emojiSearch.trim() || item.includes(emojiSearch.trim()));
-  const gifChoices = gifs.filter(item => !gifSearch.trim() || item.toLowerCase().includes(gifSearch.trim().toLowerCase()));
+  const gifChoices = gifs.filter(item => !gifSearch.trim() || item.tags.toLowerCase().includes(gifSearch.trim().toLowerCase()));
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={Platform.OS === 'ios' ? 84 : 22} style={styles.flex}>
@@ -736,6 +756,7 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
               <Text style={styles.cardTitle}>{selected.title}</Text>
               <Text style={styles.meta}>{selected.kind === 'group' ? `${selected.participants.length} members` : 'Private DM'}</Text>
             </View>
+            {selected.kind === 'group' ? <IconButton icon="people" onPress={() => setShowMembers(true)} /> : null}
             <IconButton icon="call" onPress={() => startCall('voice')} />
             <IconButton icon="videocam" onPress={() => startCall('video')} />
             <IconButton icon="download" onPress={downloadChat} />
@@ -762,7 +783,7 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
             );})}
           </ScrollView>
           {showEmoji && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search emoji or use your keyboard for all emoji" placeholderTextColor="#899486" value={emojiSearch} onChangeText={setEmojiSearch} /> <View style={styles.pickerRow}>{emojiChoices.map(item => <Pressable key={item} style={styles.pickerButton} onPress={() => setBody(prev => `${prev}${item}`)}><Text style={styles.emojiText}>{item}</Text></Pressable>)}</View></View>}
-          {showGif && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search GIFs" placeholderTextColor="#899486" value={gifSearch} onChangeText={setGifSearch} /><View style={styles.gifPicker}>{gifChoices.map(item => <Pressable key={item} onPress={() => send({ type: 'gif', attachmentUrl: item, body: 'GIF' })}><Image source={{ uri: item }} style={styles.gifThumb} /></Pressable>)}</View></View>}
+          {showGif && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search GIFs" placeholderTextColor="#899486" value={gifSearch} onChangeText={setGifSearch} /><View style={styles.gifPicker}>{gifChoices.length ? gifChoices.map(item => <Pressable key={item.url} onPress={() => send({ type: 'gif', attachmentUrl: item.url, body: 'GIF' })}><Image source={{ uri: item.url }} style={styles.gifThumb} /></Pressable>) : <Text style={styles.muted}>No GIF found. Try hi, noob, wow, love, pride, or funny.</Text>}</View></View>}
           <View style={styles.composer}>
             <IconButton icon="happy" onPress={() => openTray('emoji')} />
             <IconButton icon="film" onPress={() => openTray('gif')} />
@@ -771,6 +792,8 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
             <IconButton icon="send" onPress={() => send()} />
           </View>
           <ProfileSheet user={profileUser} currentUser={user} reportReason={reportReason} reportProof={reportProof} setReportReason={setReportReason} setReportProof={setReportProof} onClose={() => setProfileUser(null)} onMute={dmAction} onReport={submitReport} />
+          <CallSheet call={activeCall} conversation={selected} currentUser={user} onJoin={() => setActiveCall(call => call ? { ...call, joined: true } : call)} onLeave={() => setActiveCall(null)} />
+          <MemberSheet visible={showMembers} conversation={selected} onClose={() => setShowMembers(false)} />
         </View>
         )}
       </View>
@@ -1010,11 +1033,7 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
           <GlassCard>
             <Text style={styles.label}>Profile Theme</Text>
             <View style={styles.segment}>
-              {(Object.keys(profileThemes) as Array<NonNullable<User['profileTheme']>>).map(item => (
-                <Pressable key={item} style={[styles.segmentItem, profileTheme === item && styles.segmentActive]} onPress={() => setProfileTheme(item)}>
-                  <Text style={styles.segmentText}>{profileThemes[item].label}</Text>
-                </Pressable>
-              ))}
+              <ThemePicker value={profileTheme} onChange={setProfileTheme} />
             </View>
           </GlassCard>
           
@@ -1175,7 +1194,7 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
             <GlassCard>
               <Text style={styles.cardTitle}>Active Theme</Text>
               <Text style={[styles.muted, { marginTop: 8 }]}>{profileThemes[user.profileTheme || 'terria'].label}</Text>
-              <View style={styles.segment}>{(Object.keys(profileThemes) as Array<NonNullable<User['profileTheme']>>).map(item => <Pressable key={item} style={[styles.segmentItem, (user.profileTheme || 'terria') === item && styles.segmentActive]} onPress={() => api.updateProfile({ profileTheme: item }).then(next => { setUser(next); notify('success', 'Appearance updated.'); }).catch(error => notify('error', error.message))}><Text style={styles.segmentText}>{profileThemes[item].label}</Text></Pressable>)}</View>
+              <ThemePicker value={user.profileTheme || 'terria'} onChange={(item) => api.updateProfile({ profileTheme: item }).then(next => { setUser(next); notify('success', 'Appearance updated.'); }).catch(error => notify('error', error.message))} />
             </GlassCard>
             <GlassCard>
               <Text style={styles.cardTitle}>Accent Color</Text>
@@ -1310,6 +1329,8 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
   const [userResults, setUserResults] = useState<User[]>([]);
   const [moderationTarget, setModerationTarget] = useState<User | null>(null);
   const [moderationAction, setModerationAction] = useState<'mute' | 'ban' | 'unban'>('mute');
+  const [badgeMenuOpen, setBadgeMenuOpen] = useState(false);
+  const [roleMenuOpen, setRoleMenuOpen] = useState(false);
 
   const load = () => Promise.all([api.adminStats(), api.adminAnnouncements(), api.blogs(), api.badgeCatalog(), api.roles()])
     .then(([nextStats, nextAnnouncements, nextBlogs, nextBadges, nextRoles]) => {
@@ -1385,11 +1406,13 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
       <GlassCard><Text style={styles.cardTitle}>Manage Announcements</Text><PrimaryButton label="Refresh" icon="refresh" onPress={load} /><Text style={styles.muted}>Announcements remain visible until deleted manually from this dashboard.</Text>{adminAnnouncements.length === 0 ? <Text style={styles.muted}>No announcements published.</Text> : adminAnnouncements.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.title}</Text><Text style={styles.meta}>{new Date(item.createdAt).toLocaleDateString()}</Text></View><IconButton icon="trash" onPress={() => removeAnnouncement(item.id)} /></View>)}</GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Blog Post</Text><Field icon="newspaper" placeholder="Title" value={blogTitle} onChangeText={setBlogTitle} /><Field icon="document-text" placeholder="Body with links" value={blogBody} onChangeText={setBlogBody} multiline /><Field icon="image" placeholder="Image URL" value={blogImageUrl} onChangeText={setBlogImageUrl} autoCapitalize="none" /><Field icon="link" placeholder="Clickable link URL" value={blogLinkUrl} onChangeText={setBlogLinkUrl} autoCapitalize="none" /><PrimaryButton label="Publish Blog" icon="cloud-upload" onPress={createBlog} /></GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Manage Blog Posts</Text>{adminBlogs.length === 0 ? <Text style={styles.muted}>No blog posts published.</Text> : adminBlogs.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.title}</Text><Text style={styles.meta}>{item.category || 'Update'}</Text></View><IconButton icon="trash" onPress={() => removeBlog(item.id)} /></View>)}</GlassCard>
-      <GlassCard><Text style={styles.cardTitle}>Badges</Text><Field icon="at" placeholder="Username" value={badgeUser} onChangeText={setBadgeUser} autoCapitalize="none" /><View style={styles.segment}>{badgeCatalog.map(item => <Pressable key={item.id} style={[styles.segmentItem, badge === item.name && styles.segmentActive]} onPress={() => setBadge(item.name)}><Text style={styles.segmentText}>{item.name}</Text></Pressable>)}</View><PrimaryButton label="Grant Badge" icon="ribbon" onPress={() => api.grantBadge({ username: badgeUser, badge }).then(() => notify('success', 'Badge granted.')).catch(error => notify('error', error.message))} /><Field icon="add" placeholder="Create/edit badge name" value={newBadgeName} onChangeText={setNewBadgeName} /><View style={styles.ticketActions}><SecondaryButton label="Save Badge" icon="save" onPress={() => api.createBadge({ name: newBadgeName, icon: 'ribbon', color: '#E6C07A' }).then(() => { setNewBadgeName(''); load(); }).catch(error => notify('error', error.message))} />{badgeCatalog.find(item => item.name === badge) ? <SecondaryButton label="Delete Selected" icon="trash" onPress={() => api.deleteBadge(badgeCatalog.find(item => item.name === badge)!.id).then(load).catch(error => notify('error', error.message))} /> : null}</View></GlassCard>
-      <GlassCard><Text style={styles.cardTitle}>Roles</Text><Field icon="at" placeholder="Username" value={roleUser} onChangeText={setRoleUser} autoCapitalize="none" /><View style={styles.segment}>{roles.map(item => <Pressable key={item.id} style={[styles.segmentItem, role === item.id && styles.segmentActive]} onPress={() => setRole(item.id)}><Text style={styles.segmentText}>{item.name}</Text></Pressable>)}</View><Text style={styles.muted}>{roles.find(item => item.id === role)?.permissions.join(', ')}</Text><PrimaryButton label="Update Role" icon="key" onPress={() => api.setRole({ username: roleUser, role }).then(() => notify('success', 'Role updated.')).catch(error => notify('error', error.message))} /></GlassCard>
+      <GlassCard><Text style={styles.cardTitle}>Badges</Text><Field icon="at" placeholder="Username" value={badgeUser} onChangeText={setBadgeUser} autoCapitalize="none" /><DropdownButton label="Selected badge" value={badge || 'Choose badge'} icon="ribbon" onPress={() => setBadgeMenuOpen(true)} /><PrimaryButton label="Grant Badge" icon="ribbon" onPress={() => api.grantBadge({ username: badgeUser, badge }).then(() => notify('success', 'Badge granted.')).catch(error => notify('error', error.message))} /><Field icon="add" placeholder="Create/edit badge name" value={newBadgeName} onChangeText={setNewBadgeName} /><View style={styles.ticketActions}><SecondaryButton label="Save Badge" icon="save" onPress={() => api.createBadge({ name: newBadgeName, icon: 'ribbon', color: '#E6C07A' }).then(() => { setNewBadgeName(''); load(); }).catch(error => notify('error', error.message))} />{badgeCatalog.find(item => item.name === badge) ? <SecondaryButton label="Delete Selected" icon="trash" onPress={() => api.deleteBadge(badgeCatalog.find(item => item.name === badge)!.id).then(load).catch(error => notify('error', error.message))} /> : null}</View></GlassCard>
+      <GlassCard><Text style={styles.cardTitle}>Roles</Text><Field icon="at" placeholder="Username" value={roleUser} onChangeText={setRoleUser} autoCapitalize="none" /><DropdownButton label="Selected role" value={roles.find(item => item.id === role)?.name || 'Choose role'} icon="key" onPress={() => setRoleMenuOpen(true)} /><Text style={styles.muted}>{roles.find(item => item.id === role)?.permissions.join(', ')}</Text><PrimaryButton label="Update Role" icon="key" onPress={() => api.setRole({ username: roleUser, role }).then(() => notify('success', 'Role updated.')).catch(error => notify('error', error.message))} /></GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Mute / Ban Users</Text><Field icon="search" placeholder="Search users" value={userSearch} onChangeText={setUserSearch} autoCapitalize="none" /><PrimaryButton label="Search Users" icon="search" onPress={searchModerationUsers} />{userResults.map(item => <Pressable key={item.id} style={styles.memberPick} onPress={() => setModerationTarget(item)}><Text style={styles.body}>{item.displayName} @{item.tag || item.username}</Text><Ionicons name={moderationTarget?.id === item.id ? 'radio-button-on' : 'radio-button-off'} size={22} color="#CDA16A" /></Pressable>)}<View style={styles.segment}>{(['mute', 'ban', 'unban'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, moderationAction === item && styles.segmentActive]} onPress={() => setModerationAction(item)}><Text style={styles.segmentText}>{item}</Text></Pressable>)}</View><PrimaryButton label="Apply Moderation" icon="hammer" onPress={runModeration} /></GlassCard>
       <GlassCard><Text style={styles.cardTitle}>User Control</Text><Field icon="at" placeholder="User tag/email" value={adminUser} onChangeText={setAdminUser} autoCapitalize="none" /><Field icon="person" placeholder="New username" value={adminNewUsername} onChangeText={setAdminNewUsername} autoCapitalize="none" /><Field icon="keypad" placeholder="New 5-digit #" value={adminDisc} onChangeText={setAdminDisc} keyboardType="number-pad" maxLength={5} /><Field icon="call" placeholder="Mobile" value={adminMobile} onChangeText={setAdminMobile} keyboardType="phone-pad" /><Field icon="mail" placeholder="Alternate email" value={adminAltEmail} onChangeText={setAdminAltEmail} autoCapitalize="none" /><PrimaryButton label="Update User" icon="save" onPress={() => updateAdminUser(false)} /><SecondaryButton label="Reset Username Limit" icon="refresh" onPress={() => updateAdminUser(true)} /></GlassCard>
       <GlassCard><Text style={styles.cardTitle}>Exports</Text><Text style={styles.muted}>Download users as a CSV spreadsheet with profile, contact, history, and activity fields.</Text><PrimaryButton label="Download Users CSV" icon="download" onPress={exportUsers} /></GlassCard>
+      <ChoiceModal visible={badgeMenuOpen} title="Choose Badge" items={badgeCatalog.map(item => ({ key: item.name, label: item.name, icon: item.icon as keyof typeof Ionicons.glyphMap }))} selected={badge} onChoose={(key) => { setBadge(key); setBadgeMenuOpen(false); }} onClose={() => setBadgeMenuOpen(false)} />
+      <ChoiceModal visible={roleMenuOpen} title="Choose Role" items={roles.map(item => ({ key: item.id, label: item.name, body: item.permissions.join(', ') }))} selected={role} onChoose={(key) => { setRole(key as User['role']); setRoleMenuOpen(false); }} onClose={() => setRoleMenuOpen(false)} />
     </ScrollView>
   );
 }
@@ -1398,7 +1421,8 @@ function TicketScreen({ user, notify }: { user: User; notify: (tone: 'error' | '
   const [tickets, setTickets] = useState<Loadable<Ticket[]>>({ loading: true, data: [] });
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
-  const [ticketReply, setTicketReply] = useState('');
+  const [ticketReplies, setTicketReplies] = useState<Record<string, string>>({});
+  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [type, setType] = useState<Ticket['type']>('support');
   const load = () => api.tickets().then(data => setTickets({ loading: false, data })).catch(error => { setTickets({ loading: false, data: [], error: error.message }); notify('error', error.message); });
   useEffect(() => { load(); }, []);
@@ -1419,11 +1443,16 @@ function TicketScreen({ user, notify }: { user: User; notify: (tone: 'error' | '
       .catch(error => notify('error', error.message));
   }
   async function reply(ticket: Ticket) {
-    if (!ticketReply.trim()) return;
-    await api.updateTicket(ticket.id, { note: ticketReply })
-      .then(() => { setTicketReply(''); load(); })
+    const note = ticketReplies[ticket.id] || '';
+    if (!note.trim()) return;
+    await api.updateTicket(ticket.id, { note })
+      .then(() => { setTicketReplies(prev => ({ ...prev, [ticket.id]: '' })); load(); })
       .catch(error => notify('error', error.message));
   }
+  const openTickets = tickets.data.filter(ticket => ticket.status !== 'closed');
+  const closedTickets = tickets.data.filter(ticket => ticket.status === 'closed');
+  const orderedTickets = [...openTickets, ...closedTickets];
+  const selectedTicket = orderedTickets.find(ticket => ticket.id === selectedTicketId) || orderedTickets[0];
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <SectionTitle title="Tickets & Reports" action="Refresh" onPress={load} />
@@ -1434,15 +1463,15 @@ function TicketScreen({ user, notify }: { user: User; notify: (tone: 'error' | '
         <Field icon="document-text" placeholder="Describe what happened" value={body} onChangeText={setBody} multiline />
         <PrimaryButton label="Create Ticket" icon="send" onPress={create} />
       </GlassCard>
-      {tickets.loading ? <LoadingState /> : tickets.error ? <ErrorState message={tickets.error} onRetry={load} /> : tickets.data.map(ticket => (
+      {tickets.loading ? <LoadingState /> : tickets.error ? <ErrorState message={tickets.error} onRetry={load} /> : orderedTickets.map(ticket => (
         <GlassCard key={ticket.id}>
           <View style={styles.postTop}><Text style={styles.cardTitle}>{ticket.subject}</Text><Text style={styles.badge}>{ticket.status}</Text></View>
           <Text style={styles.muted}>{ticket.type} · {new Date(ticket.createdAt).toLocaleDateString()}</Text>
           <View style={styles.ticketChat}><Text style={styles.messageName}>{user.displayName}</Text><Text style={styles.body}>{ticket.body}</Text>{(ticket.updates || []).map(update => <View key={`${update.at}-${update.by}`} style={styles.ticketReply}><Text style={styles.messageName}>Staff/User</Text><Text style={styles.body}>{update.note}</Text><Text style={styles.meta}>{new Date(update.at).toLocaleString()}</Text></View>)}</View>
-          <Field icon="chatbubble" placeholder="Reply in ticket" value={ticketReply} onChangeText={setTicketReply} multiline />
+          {ticket.status !== 'closed' ? <Field icon="chatbubble" placeholder="Reply in ticket" value={ticketReplies[ticket.id] || ''} onChangeText={value => setTicketReplies(prev => ({ ...prev, [ticket.id]: value }))} multiline /> : <Text style={styles.muted}>This ticket is closed. Reopen it to send another reply.</Text>}
           {ticket.proofUrl ? <Pressable onPress={() => openLink(ticket.proofUrl)}><Text style={styles.link}>Open proof</Text></Pressable> : null}
           <View style={styles.mediaActions}>
-            <SecondaryButton label="Reply" icon="send" onPress={() => reply(ticket)} />
+            {ticket.status !== 'closed' ? <SecondaryButton label="Reply" icon="send" onPress={() => reply(ticket)} /> : null}
             <SecondaryButton label="Download" icon="download" onPress={() => download(ticket)} />
             {ticket.status !== 'closed' ? <SecondaryButton label="Close" icon="checkmark" onPress={() => ticketAction(ticket, 'close')} /> : <SecondaryButton label="Reopen" icon="refresh" onPress={() => ticketAction(ticket, 'reopen')} />}
           </View>
@@ -1624,6 +1653,85 @@ function normalizeBadges(badges: string[]) {
   return badges.length ? badges : ['Member'];
 }
 
+function CallSheet({
+  call,
+  conversation,
+  currentUser,
+  onJoin,
+  onLeave
+}: {
+  call: { kind: 'voice' | 'video'; roomName: string; url?: string; token?: string; joined: boolean } | null;
+  conversation: Conversation | null;
+  currentUser: User;
+  onJoin: () => void;
+  onLeave: () => void;
+}) {
+  if (!call || !conversation) return null;
+  const title = call.kind === 'voice' ? 'Voice Call' : 'Video Call';
+  const possibleMembers = conversation.participants.length;
+  return (
+    <Modal visible transparent animationType="slide">
+      <View style={styles.sheetBackdrop}>
+        <View style={styles.callSheet}>
+          <View style={styles.editorHeader}>
+            <Text style={[styles.cardTitle, { flex: 1 }]}>{title}</Text>
+            <IconButton icon="close" onPress={onLeave} />
+          </View>
+          <Text style={styles.muted}>{conversation.title}</Text>
+          <View style={styles.callStatusPanel}>
+            <Ionicons name={call.kind === 'voice' ? 'call' : 'videocam'} size={30} color="#E6C07A" />
+            <Text style={styles.heroSmall}>{call.joined ? 'Connected' : 'Invite Sent'}</Text>
+            <Text style={styles.muted}>{call.joined ? `1 connected - ${possibleMembers} can join` : `0 connected - ${possibleMembers} invited`}</Text>
+          </View>
+          <View style={styles.memberListCompact}>
+            {conversation.participants.map(member => (
+              <View key={member.id} style={styles.memberPick}>
+                <UserAvatar user={member} size={34} />
+                <View style={styles.flex}>
+                  <Text style={styles.body}>{member.displayName}</Text>
+                  <Text style={styles.meta}>{call.joined && member.id === currentUser.id ? 'Connected' : 'Invited'}</Text>
+                </View>
+                <StatusPill presence={member.presence} />
+              </View>
+            ))}
+          </View>
+          <View style={styles.mediaActions}>
+            {!call.joined ? <PrimaryButton label="Join Call" icon={call.kind === 'voice' ? 'call' : 'videocam'} onPress={onJoin} /> : null}
+            <SecondaryButton label={call.joined ? 'Leave Call' : 'Cancel'} icon="close" onPress={onLeave} />
+          </View>
+          {!call.url || !call.token ? <Text style={styles.meta}>Live call media is waiting for the server room token. Notifications still go out.</Text> : null}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function MemberSheet({ visible, conversation, onClose }: { visible: boolean; conversation: Conversation | null; onClose: () => void }) {
+  if (!conversation) return null;
+  return (
+    <Modal visible={visible} transparent animationType="slide">
+      <View style={styles.sheetBackdrop}>
+        <View style={styles.editorPanel}>
+          <View style={styles.editorHeader}><Text style={[styles.cardTitle, { flex: 1 }]}>Members</Text><IconButton icon="close" onPress={onClose} /></View>
+          <Text style={styles.muted}>{conversation.title} - {conversation.participants.length} members</Text>
+          <ScrollView style={styles.memberListCompact}>
+            {conversation.participants.map(member => (
+              <View key={member.id} style={styles.memberPick}>
+                <UserAvatar user={member} size={36} />
+                <View style={styles.flex}>
+                  <Text style={styles.body}>{member.displayName}</Text>
+                  <Text style={styles.meta}>@{member.tag || member.username}</Text>
+                </View>
+                <StatusPill presence={member.presence} />
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function ProfileSheet({
   user,
   currentUser,
@@ -1709,6 +1817,24 @@ function ColorPicker({ value, onChange }: { value: string; onChange: (color: str
   return <View style={styles.colorPicker}>{colorChoices.map(color => <Pressable key={color} onPress={() => onChange(color)} style={[styles.colorSwatchButton, { backgroundColor: color }, value === color && styles.colorSwatchSelected]} />)}</View>;
 }
 
+function ThemePicker({ value, onChange }: { value: NonNullable<User['profileTheme']>; onChange: (theme: NonNullable<User['profileTheme']>) => void }) {
+  return (
+    <View style={styles.themePicker}>
+      {(Object.keys(profileThemes) as Array<NonNullable<User['profileTheme']>>).map(item => {
+        const theme = profileThemes[item];
+        return (
+          <Pressable key={item} onPress={() => onChange(item)} style={[styles.themeSwatch, value === item && styles.themeSwatchActive]}>
+            <LinearGradient colors={theme.colors} style={styles.themeSwatchGradient}>
+              <View style={[styles.themeSwatchDot, { backgroundColor: theme.color }]} />
+            </LinearGradient>
+            <Text style={styles.meta}>{theme.label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
 function NoticeFooter({ notice, bottom }: { notice: Notice; bottom: number }) {
   if (!notice) return null;
   return <View style={[styles.notice, notice.tone === 'error' ? styles.noticeError : notice.tone === 'success' ? styles.noticeSuccess : styles.noticeInfo, { bottom }]}><Text style={styles.noticeText}>{notice.text}</Text></View>;
@@ -1730,6 +1856,57 @@ function IconButton({ icon, onPress }: { icon: keyof typeof Ionicons.glyphMap; o
   return <Pressable onPress={onPress} style={styles.iconButton}><Ionicons name={icon} size={19} color="#E4EAD9" /></Pressable>;
 }
 
+function DropdownButton({ label, value, icon, onPress }: { label: string; value: string; icon: keyof typeof Ionicons.glyphMap; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={styles.dropdownButton}>
+      <Ionicons name={icon} size={18} color="#E6C07A" />
+      <View style={styles.flex}>
+        <Text style={styles.meta}>{label}</Text>
+        <Text style={styles.body}>{value}</Text>
+      </View>
+      <Ionicons name="chevron-down" size={18} color="#AEB8A5" />
+    </Pressable>
+  );
+}
+
+function ChoiceModal({
+  visible,
+  title,
+  items,
+  selected,
+  onChoose,
+  onClose
+}: {
+  visible: boolean;
+  title: string;
+  items: Array<{ key: string; label: string; body?: string; icon?: keyof typeof Ionicons.glyphMap }>;
+  selected: string;
+  onChoose: (key: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade">
+      <View style={styles.modalBackdrop}>
+        <View style={styles.choiceModal}>
+          <View style={styles.editorHeader}><Text style={[styles.cardTitle, { flex: 1 }]}>{title}</Text><IconButton icon="close" onPress={onClose} /></View>
+          <ScrollView style={{ maxHeight: 320 }}>
+            {items.map(item => (
+              <Pressable key={item.key} onPress={() => onChoose(item.key)} style={[styles.choiceRow, selected === item.key && styles.choiceRowActive]}>
+                <Ionicons name={item.icon || 'ellipse'} size={18} color="#E6C07A" />
+                <View style={styles.flex}>
+                  <Text style={styles.body}>{item.label}</Text>
+                  {item.body ? <Text style={styles.meta}>{item.body}</Text> : null}
+                </View>
+                {selected === item.key ? <Ionicons name="checkmark" size={18} color="#98D6A1" /> : null}
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function GlassCard({ children, style }: { children: React.ReactNode; style?: object }) {
   return <BlurView intensity={18} tint="dark" style={[styles.glassCard, style]}>{children}</BlurView>;
 }
@@ -1747,7 +1924,7 @@ function SectionTitle({ title, action, onPress }: { title: string; action?: stri
 }
 
 function UserList({ title, users, empty, right }: { title: string; users: User[]; empty: string; right?: (user: User) => React.ReactNode }) {
-  return <View><Text style={styles.label}>{title}</Text>{users.length === 0 ? <EmptyState title="Empty" body={empty} /> : users.map(user => <GlassCard key={user.id} style={styles.userRow}><UserAvatar user={user} /><View style={styles.flex}><Text style={styles.body}>{user.displayName}</Text><Text style={styles.muted}>@{user.tag || user.username}</Text><Text style={styles.muted}>{user.customStatus || user.presence}</Text><View style={styles.badgeRowMini}>{user.badges.slice(0, 3).map(b => <Text key={b} style={styles.badgeMini}>{b}</Text>)}</View></View>{right?.(user)}</GlassCard>)}</View>;
+  return <View><Text style={styles.label}>{title}</Text>{users.length === 0 ? <EmptyState title="Empty" body={empty} /> : users.map(user => <GlassCard key={user.id} style={styles.userRowCard}><View style={styles.userRowTop}><UserAvatar user={user} /><View style={styles.flex}><Text style={styles.body}>{user.displayName}</Text><Text style={styles.muted}>@{user.tag || user.username}</Text><StatusPill presence={user.presence} /><View style={styles.badgeRowMini}>{user.badges.slice(0, 3).map(b => <Text key={b} style={styles.badgeMini}>{b}</Text>)}</View></View></View>{right ? <View style={styles.userActionWrap}>{right(user)}</View> : null}</GlassCard>)}</View>;
 }
 
 function RequestList({ title, requests, accept, deny }: { title: string; requests: FriendState['incoming']; accept?: (id: string) => void; deny?: (id: string) => void }) {
@@ -1874,8 +2051,11 @@ const styles = StyleSheet.create({
   avatarLarge: { width: 96, height: 96, borderRadius: 24, backgroundColor: '#33412E', alignItems: 'center', justifyContent: 'center', borderWidth: 3, borderColor: '#7D8B58' },
   avatarText: { color: '#F4F0E6', fontWeight: '900', fontSize: 18 },
   
-  rowActions: { flexDirection: 'row', gap: 8 },
+  rowActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   requestActions: { flexDirection: 'row', gap: 8 },
+  userRowCard: { gap: 12 },
+  userRowTop: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  userActionWrap: { borderTopWidth: 1, borderTopColor: 'rgba(218,226,202,.08)', paddingTop: 10 },
   
   // Icon Button
   iconButton: { width: 44, height: 44, borderRadius: 10, backgroundColor: 'rgba(255,255,255,.06)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,.08)' },
@@ -1896,6 +2076,7 @@ const styles = StyleSheet.create({
   
   // Member Selection
   memberPick: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 50, paddingHorizontal: 14, borderRadius: 12, backgroundColor: 'rgba(255,255,255,.04)', marginTop: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,.06)' },
+  memberListCompact: { maxHeight: 300, marginTop: 10 },
   friendsSelector: { gap: 10, marginTop: 12 },
   friendOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 50, paddingHorizontal: 14, borderRadius: 12, backgroundColor: 'rgba(255,255,255,.03)', borderWidth: 1, borderColor: 'rgba(255,255,255,.06)', paddingVertical: 12 },
   friendOptionSelected: { backgroundColor: 'rgba(230,192,122,.12)', borderColor: 'rgba(230,192,122,.3)' },
@@ -1952,6 +2133,8 @@ const styles = StyleSheet.create({
   pinnedText: { color: '#EDE4C8', fontWeight: '800', flex: 1, fontSize: 12 },
   callActions: { flexDirection: 'row', gap: 10 },
   callCard: { gap: 12, borderColor: 'rgba(255,170,168,.15)', borderWidth: 1 },
+  callSheet: { width: '100%', borderRadius: 12, backgroundColor: '#182019', borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', padding: 18, gap: 12 },
+  callStatusPanel: { minHeight: 128, borderRadius: 12, backgroundColor: 'rgba(230,192,122,.09)', borderWidth: 1, borderColor: 'rgba(230,192,122,.18)', alignItems: 'center', justifyContent: 'center', gap: 8 },
   
   // Profile
   profileHero: { alignItems: 'center', gap: 14, paddingTop: 8, paddingVertical: 20 },
@@ -2039,6 +2222,15 @@ const styles = StyleSheet.create({
   languageChip: { minHeight: 38, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(218,226,202,.14)', paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,.04)' },
   colorSwatchButton: { width: 34, height: 34, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,.18)' },
   colorSwatchSelected: { borderColor: '#F4F0E6', borderWidth: 3 },
+  themePicker: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 12 },
+  themeSwatch: { width: 82, gap: 6, alignItems: 'center' },
+  themeSwatchActive: { opacity: 1 },
+  themeSwatchGradient: { width: 56, height: 44, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,.16)', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  themeSwatchDot: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: '#F4F0E6' },
+  dropdownButton: { minHeight: 58, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(218,226,202,.16)', backgroundColor: 'rgba(11,16,12,.72)', paddingHorizontal: 14, marginTop: 12, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  choiceModal: { width: '92%', maxHeight: '70%', borderRadius: 12, backgroundColor: '#182019', borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', padding: 16, gap: 10 },
+  choiceRow: { minHeight: 54, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(218,226,202,.1)', backgroundColor: 'rgba(255,255,255,.04)', paddingHorizontal: 12, marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  choiceRowActive: { backgroundColor: 'rgba(230,192,122,.14)', borderColor: 'rgba(230,192,122,.34)' },
   
   videoGrid: { minHeight: 240, gap: 10, borderRadius: 18, overflow: 'hidden', backgroundColor: '#05070B', alignItems: 'center', justifyContent: 'center' },
   videoTile: { width: '100%', height: 240, borderRadius: 18 }

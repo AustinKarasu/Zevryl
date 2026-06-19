@@ -2,7 +2,7 @@ const app = {
   expo: {
     name: 'Zevryl',
     slug: 'zevryl',
-    version: '0.1.18',
+    version: '1.0.0',
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'dark',
@@ -24,7 +24,7 @@ const app = {
     },
     android: {
       package: 'com.zevryl.mobile',
-      versionCode: 18,
+      versionCode: 100,
       adaptiveIcon: {
         foregroundImage: './assets/icon.png',
         backgroundColor: '#1475F8'

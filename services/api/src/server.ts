@@ -662,8 +662,18 @@ app.post('/friends/:id/unmute', async request => {
 });
 
 app.get('/groups', async request => {
-  const rows = await pool.query(`select g.*, count(gm.user_id)::int as member_count from groups g join group_members gm on gm.group_id=g.id where g.archived_at is null and g.id in (select group_id from group_members where user_id=$1 and banned_at is null) group by g.id order by g.created_at desc`, [request.auth!.id]);
-  return rows.rows.map(row => ({ id: row.id, name: row.name, description: row.description, ownerId: row.owner_id, avatarUrl: row.avatar_url, bannerUrl: row.banner_url, slowmodeSeconds: row.slowmode_seconds, visibility: row.visibility, inviteCode: row.invite_code, voiceLimit: row.voice_limit, videoLimit: row.video_limit, memberCount: row.member_count, unreadCount: 0 }));
+  const rows = await pool.query(
+    `select g.*, c.id as conversation_id, count(gm.user_id)::int as member_count
+     from groups g
+     join group_members gm on gm.group_id=g.id
+     left join conversations c on c.group_id=g.id and c.kind='group'
+     where g.archived_at is null
+       and g.id in (select group_id from group_members where user_id=$1 and banned_at is null)
+     group by g.id, c.id
+     order by g.created_at desc`,
+    [request.auth!.id]
+  );
+  return rows.rows.map(row => ({ id: row.id, name: row.name, description: row.description, ownerId: row.owner_id, conversationId: row.conversation_id, avatarUrl: row.avatar_url, bannerUrl: row.banner_url, slowmodeSeconds: row.slowmode_seconds, visibility: row.visibility, inviteCode: row.invite_code, voiceLimit: row.voice_limit, videoLimit: row.video_limit, memberCount: row.member_count, unreadCount: 0 }));
 });
 
 app.post('/groups', async request => {
@@ -679,7 +689,7 @@ app.post('/groups', async request => {
   for (const friendId of body.friendIds) await pool.query('insert into conversation_members (conversation_id,user_id) values ($1,$2) on conflict do nothing', [conversationId, friendId]);
   await audit(request.auth!.id, 'group.create', 'group', groupId);
   const row = (await pool.query('select *, $2::int as member_count from groups where id=$1', [groupId, body.friendIds.length + 1])).rows[0];
-  return { id: row.id, name: row.name, description: row.description, ownerId: row.owner_id, slowmodeSeconds: row.slowmode_seconds, visibility: row.visibility, inviteCode: row.invite_code, voiceLimit: row.voice_limit, videoLimit: row.video_limit, memberCount: row.member_count, unreadCount: 0 };
+  return { id: row.id, name: row.name, description: row.description, ownerId: row.owner_id, conversationId, slowmodeSeconds: row.slowmode_seconds, visibility: row.visibility, inviteCode: row.invite_code, voiceLimit: row.voice_limit, videoLimit: row.video_limit, memberCount: row.member_count, unreadCount: 0 };
 });
 
 app.delete('/groups/:id', async request => {
@@ -711,7 +721,7 @@ app.post('/groups/invites/:code/join', async request => {
   const conversation = (await pool.query('select id from conversations where group_id=$1 limit 1', [group.id])).rows[0];
   if (conversation) await pool.query('insert into conversation_members (conversation_id,user_id) values ($1,$2) on conflict do nothing', [conversation.id, request.auth!.id]);
   await audit(request.auth!.id, 'group.invite.join', 'group', group.id, { inviteCode: params.code });
-  return { id: group.id, name: group.name, description: group.description, ownerId: group.owner_id, slowmodeSeconds: group.slowmode_seconds, visibility: group.visibility, inviteCode: group.invite_code, voiceLimit: group.voice_limit, videoLimit: group.video_limit, memberCount: 1, unreadCount: 0 };
+  return { id: group.id, name: group.name, description: group.description, ownerId: group.owner_id, conversationId: conversation?.id, slowmodeSeconds: group.slowmode_seconds, visibility: group.visibility, inviteCode: group.invite_code, voiceLimit: group.voice_limit, videoLimit: group.video_limit, memberCount: 1, unreadCount: 0 };
 });
 
 app.get('/conversations', async request => {
@@ -880,9 +890,9 @@ app.get('/app/latest', async () => {
     };
   }
   return {
-    version: '0.1.18',
-    title: 'New Update 0.1.18',
-    notes: 'Professional splash, better themes, working DMs, group chat foundations, tickets, notifications, and moderation tools.',
+    version: '1.0.0',
+    title: 'New Update 1.0.0',
+    notes: 'Professional launch build with improved friends, groups, calls, tickets, themes, notifications, and admin tools.',
     apkUrl: 'https://github.com/AustinKarasu/Zevryl/releases/latest',
     required: false
   };

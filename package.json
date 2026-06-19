@@ -1,6 +1,6 @@
 {
   "name": "zevryl",
-  "version": "0.1.18",
+  "version": "1.0.0",
   "private": true,
   "workspaces": [
     "apps/mobile",
