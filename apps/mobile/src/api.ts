@@ -372,6 +372,8 @@ export const api = {
   createBlog: (payload: { title: string; body: string; category: string; pinned: boolean; imageUrl?: string; linkUrl?: string; linkLabel?: string }) =>
     request<BlogPost>('/admin/blogs', { method: 'POST', body: JSON.stringify(payload) }),
   deleteBlog: (id: string) => request(`/admin/blogs/${id}`, { method: 'DELETE' }),
+  sendAdminEmail: (payload: { audience: 'all' | 'active' | 'staff'; title: string; message: string; imageUrl?: string; fileUrl?: string; linkUrl?: string; ctaLabel?: string }) =>
+    request<{ ok: true; sent: number; failed: number }>('/admin/email', { method: 'POST', body: JSON.stringify(payload) }),
   grantBadge: (payload: { username: string; badge: string }) =>
     request<User>('/admin/badges/grant', { method: 'POST', body: JSON.stringify(payload) }),
   badgeCatalog: () => request<BadgeDefinition[]>('/admin/badges'),

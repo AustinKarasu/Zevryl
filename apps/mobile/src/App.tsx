@@ -2368,7 +2368,7 @@ function DensityPreview({ value, onChange }: { value: keyof typeof densityChoice
 }
 
 function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: { setAnnouncement: (a: Announcement | null) => void; setShowAnnouncement: (v: boolean) => void; setTab: (tab: AppTab) => void; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
-  const [page, setPage] = useState<'overview' | 'users' | 'alerts' | 'moderation' | 'content' | 'badges' | 'logs' | 'analytics'>('overview');
+  const [page, setPage] = useState<'overview' | 'users' | 'alerts' | 'moderation' | 'content' | 'email' | 'badges' | 'logs' | 'analytics'>('overview');
   const [stats, setStats] = useState<DashboardStats>(emptyStats);
   const [adminAnnouncements, setAdminAnnouncements] = useState<Announcement[]>([]);
   const [adminBlogs, setAdminBlogs] = useState<BlogPost[]>([]);
@@ -2380,6 +2380,13 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
   const [linkUrl, setLinkUrl] = useState('');
   const [blogImageUrl, setBlogImageUrl] = useState('');
   const [blogLinkUrl, setBlogLinkUrl] = useState('');
+  const [emailAudience, setEmailAudience] = useState<'all' | 'active' | 'staff'>('all');
+  const [emailTitle, setEmailTitle] = useState('');
+  const [emailMessage, setEmailMessage] = useState('');
+  const [emailImageUrl, setEmailImageUrl] = useState('');
+  const [emailFileUrl, setEmailFileUrl] = useState('');
+  const [emailLinkUrl, setEmailLinkUrl] = useState('');
+  const [emailSending, setEmailSending] = useState(false);
   const [badgeUser, setBadgeUser] = useState('');
   const [badge, setBadge] = useState('Founder');
   const [roleUser, setRoleUser] = useState('');
@@ -2530,12 +2537,67 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
       .catch(error => notify('error', error.message));
   }
 
+  async function pickCampaignImage() {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) return notify('error', 'Gallery permission is required.');
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.82 });
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    await api.uploadFile({
+      uri: asset.uri,
+      name: asset.fileName || `email-image-${Date.now()}.jpg`,
+      mimeType: asset.mimeType || 'image/jpeg'
+    }).then(upload => {
+      setEmailImageUrl(upload.url);
+      notify('success', 'Email image uploaded.');
+    }).catch(error => notify('error', error.message));
+  }
+
+  async function pickCampaignFile() {
+    const result = await DocumentPicker.getDocumentAsync({ multiple: false, copyToCacheDirectory: true });
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    if (typeof asset.size === 'number' && asset.size > maxDocumentBytes) return notify('error', 'File is too large. Maximum size is 500 MB.');
+    await api.uploadFile({
+      uri: asset.uri,
+      name: asset.name || `email-file-${Date.now()}`,
+      mimeType: asset.mimeType || 'application/octet-stream'
+    }).then(upload => {
+      setEmailFileUrl(upload.url);
+      notify('success', 'Email attachment uploaded.');
+    }).catch(error => notify('error', error.message));
+  }
+
+  async function sendCampaignEmail() {
+    if (!emailTitle.trim() || !emailMessage.trim()) return notify('error', 'Add an email title and message.');
+    setEmailSending(true);
+    await api.sendAdminEmail({
+      audience: emailAudience,
+      title: emailTitle.trim(),
+      message: emailMessage.trim(),
+      imageUrl: emailImageUrl.trim() || undefined,
+      fileUrl: emailFileUrl.trim() || undefined,
+      linkUrl: emailLinkUrl.trim() || undefined,
+      ctaLabel: 'Open'
+    }).then(result => {
+      setEmailTitle('');
+      setEmailMessage('');
+      setEmailImageUrl('');
+      setEmailFileUrl('');
+      setEmailLinkUrl('');
+      notify('success', `Email sent to ${result.sent} user(s). ${result.failed} failed.`);
+      load();
+    }).catch(error => notify('error', error.message))
+      .finally(() => setEmailSending(false));
+  }
+
   const adminPages: Array<[typeof page, string, keyof typeof Ionicons.glyphMap]> = [
     ['overview', 'Overview', 'speedometer'],
     ['users', 'Users', 'people'],
     ['alerts', 'Alerts', 'warning'],
     ['moderation', 'Moderation', 'hammer'],
     ['content', 'Content', 'newspaper'],
+    ['email', 'Email', 'mail'],
     ['badges', 'Badges/Roles', 'ribbon'],
     ['logs', 'Logs', 'list'],
     ['analytics', 'Analytics', 'analytics']
@@ -2552,6 +2614,7 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
       </View>
       {page === 'overview' && <><StatsGrid values={[['Users', String(stats.users)], ['Active', String(stats.activeUsers ?? 0)], ['Reports', String(stats.reports)], ['Invites', String(stats.invites ?? 0)]]} /><GlassCard><Text style={styles.cardTitle}>Control Center</Text><Text style={styles.muted}>Jump into moderation tickets, export data, and manage user access from one place.</Text><View style={styles.ticketActions}><SecondaryButton label="Tickets" icon="ticket" onPress={() => setTab('tickets')} /><SecondaryButton label="Staff Queue" icon="briefcase" onPress={() => setTab('staff')} /><SecondaryButton label="Export Users" icon="download" onPress={exportUsers} /></View></GlassCard></>}
       {page === 'content' && <><GlassCard><Text style={styles.cardTitle}>Announcement</Text><Field icon="megaphone" placeholder="Title" value={title} onChangeText={setTitle} /><Field icon="document-text" placeholder="Message with links" value={body} onChangeText={setBody} multiline /><Field icon="image" placeholder="Image URL" value={imageUrl} onChangeText={setImageUrl} autoCapitalize="none" /><Field icon="link" placeholder="Clickable link URL" value={linkUrl} onChangeText={setLinkUrl} autoCapitalize="none" /><PrimaryButton label="Publish Announcement" icon="send" onPress={broadcast} /></GlassCard><GlassCard><Text style={styles.cardTitle}>Announcement Logs</Text><PrimaryButton label="Refresh" icon="refresh" onPress={load} />{adminAnnouncements.length === 0 ? <Text style={styles.muted}>No announcements published.</Text> : adminAnnouncements.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.title}</Text><Text style={styles.meta}>Published {new Date(item.createdAt).toLocaleString()}</Text></View><IconButton icon="trash" onPress={() => removeAnnouncement(item.id)} /></View>)}</GlassCard><GlassCard><Text style={styles.cardTitle}>Blog Post</Text><Field icon="newspaper" placeholder="Title" value={blogTitle} onChangeText={setBlogTitle} /><Field icon="document-text" placeholder="Body with links" value={blogBody} onChangeText={setBlogBody} multiline /><Field icon="image" placeholder="Image URL" value={blogImageUrl} onChangeText={setBlogImageUrl} autoCapitalize="none" /><Field icon="link" placeholder="Clickable link URL" value={blogLinkUrl} onChangeText={setBlogLinkUrl} autoCapitalize="none" /><PrimaryButton label="Publish Blog" icon="cloud-upload" onPress={createBlog} /></GlassCard><GlassCard><Text style={styles.cardTitle}>Blog Logs</Text>{adminBlogs.length === 0 ? <Text style={styles.muted}>No blog posts published.</Text> : adminBlogs.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.title}</Text><Text style={styles.meta}>{item.category || 'Update'} - {new Date(item.createdAt).toLocaleString()}</Text></View><IconButton icon="trash" onPress={() => removeBlog(item.id)} /></View>)}</GlassCard></>}
+      {page === 'email' && <GlassCard><Text style={styles.cardTitle}>Email Campaign</Text><View style={styles.segment}>{(['all', 'active', 'staff'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, emailAudience === item && styles.segmentActive]} onPress={() => setEmailAudience(item)}><Text style={styles.segmentText}>{item}</Text></Pressable>)}</View><Field icon="mail" placeholder="Email title" value={emailTitle} onChangeText={setEmailTitle} /><Field icon="document-text" placeholder="Message" value={emailMessage} onChangeText={setEmailMessage} multiline /><Field icon="image" placeholder="Image URL" value={emailImageUrl} onChangeText={setEmailImageUrl} autoCapitalize="none" /><Field icon="document-attach" placeholder="Attachment URL" value={emailFileUrl} onChangeText={setEmailFileUrl} autoCapitalize="none" /><Field icon="link" placeholder="Action link URL" value={emailLinkUrl} onChangeText={setEmailLinkUrl} autoCapitalize="none" /><View style={styles.ticketActions}><SecondaryButton label="Upload Image" icon="image" onPress={pickCampaignImage} /><SecondaryButton label="Upload File" icon="document-attach" onPress={pickCampaignFile} /></View><PrimaryButton label={emailSending ? 'Sending...' : 'Send Email'} icon="send" busy={emailSending} onPress={sendCampaignEmail} /></GlassCard>}
       {page === 'badges' && <><GlassCard><Text style={styles.cardTitle}>Badges</Text><Field icon="at" placeholder="Username, email, or tag" value={badgeUser} onChangeText={setBadgeUser} autoCapitalize="none" /><DropdownButton label="Selected badge" value={badge || 'Choose badge'} icon="ribbon" onPress={() => setBadgeMenuOpen(true)} /><PrimaryButton label="Grant Badge" icon="ribbon" onPress={() => api.grantBadge({ username: badgeUser, badge }).then(() => notify('success', 'Badge granted.')).catch(error => notify('error', error.message))} /><Field icon="add" placeholder="Create/edit badge name" value={newBadgeName} onChangeText={setNewBadgeName} /><View style={styles.ticketActions}><SecondaryButton label="Save Badge" icon="save" onPress={() => api.createBadge({ name: newBadgeName, icon: 'ribbon', color: '#E6C07A' }).then(() => { setNewBadgeName(''); load(); }).catch(error => notify('error', error.message))} />{badgeCatalog.find(item => item.name === badge) ? <SecondaryButton label="Delete Selected" icon="trash" onPress={() => api.deleteBadge(badgeCatalog.find(item => item.name === badge)!.id).then(load).catch(error => notify('error', error.message))} /> : null}</View></GlassCard><GlassCard><Text style={styles.cardTitle}>Roles</Text><Field icon="at" placeholder="Username, email, or tag" value={roleUser} onChangeText={setRoleUser} autoCapitalize="none" /><DropdownButton label="Selected role" value={roles.find(item => item.id === role)?.name || 'Choose role'} icon="key" onPress={() => setRoleMenuOpen(true)} /><Text style={styles.muted}>{roles.find(item => item.id === role)?.permissions.join(', ')}</Text><PrimaryButton label="Update Role" icon="key" onPress={() => api.setRole({ username: roleUser, role }).then(() => notify('success', 'Role updated.')).catch(error => notify('error', error.message))} /></GlassCard></>}
       {page === 'moderation' && <GlassCard><Text style={styles.cardTitle}>Punishment Center</Text><Field icon="search" placeholder="Search users" value={userSearch} onChangeText={setUserSearch} autoCapitalize="none" /><PrimaryButton label="Search Users" icon="search" onPress={searchModerationUsers} />{userResults.map(item => <Pressable key={item.id} style={styles.memberPick} onPress={() => setModerationTarget(item)}><Text style={styles.body}>{item.displayName} @{item.tag || item.username}</Text><Ionicons name={moderationTarget?.id === item.id ? 'radio-button-on' : 'radio-button-off'} size={22} color="#CDA16A" /></Pressable>)}<View style={styles.segment}>{(['mute', 'ban', 'unban'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, moderationAction === item && styles.segmentActive]} onPress={() => setModerationAction(item)}><Text style={styles.segmentText}>{item}</Text></Pressable>)}</View><Field icon="timer" placeholder="Duration hours" value={moderationHours} onChangeText={setModerationHours} keyboardType="number-pad" /><Field icon="document-text" placeholder="Reason shown in punishment log" value={moderationReason} onChangeText={setModerationReason} multiline /><PrimaryButton label="Apply Punishment" icon="hammer" onPress={runModeration} /></GlassCard>}
       {page === 'users' && <><GlassCard><Text style={styles.cardTitle}>Users</Text><Field icon="search" placeholder="Search name, username, email, or #" value={adminUserSearch} onChangeText={setAdminUserSearch} autoCapitalize="none" /><PrimaryButton label="Search Users" icon="search" onPress={searchAdminUsers} /><Text style={styles.muted}>Page {adminUsers.page} of {adminUsers.totalPages} - {adminUsers.total} users. Showing max 10.</Text>{adminUsers.items.length === 0 ? <Text style={styles.muted}>No users found.</Text> : adminUsers.items.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.displayName}</Text><Text style={styles.meta}>@{item.tag || item.username} - {item.role}</Text></View><IconButton icon="create" onPress={() => editAdminUser(item)} /></View>)}<View style={styles.ticketActions}><SecondaryButton label="Previous" icon="chevron-back" onPress={() => setAdminUserPage(page => Math.max(1, page - 1))} /><SecondaryButton label="Next" icon="chevron-forward" onPress={() => setAdminUserPage(page => Math.min(adminUsers.totalPages, page + 1))} /></View></GlassCard><GlassCard><Text style={styles.cardTitle}>User Control</Text><Field icon="at" placeholder="Username, email, or tag" value={adminUser} onChangeText={setAdminUser} autoCapitalize="none" /><Field icon="person" placeholder="New username" value={adminNewUsername} onChangeText={setAdminNewUsername} autoCapitalize="none" /><Field icon="keypad" placeholder="New 5-digit #" value={adminDisc} onChangeText={setAdminDisc} keyboardType="number-pad" maxLength={5} /><Field icon="call" placeholder="Mobile" value={adminMobile} onChangeText={setAdminMobile} keyboardType="phone-pad" /><Field icon="mail" placeholder="Alternate email" value={adminAltEmail} onChangeText={setAdminAltEmail} autoCapitalize="none" /><Field icon="lock-closed" placeholder="New password" value={adminPassword} onChangeText={setAdminPassword} secureTextEntry /><PrimaryButton label="Update User" icon="save" onPress={() => updateAdminUser(false)} /><SecondaryButton label="Reset Username Limit" icon="refresh" onPress={() => updateAdminUser(true)} /><SecondaryButton label="Download Users CSV" icon="download" onPress={exportUsers} /></GlassCard></>}

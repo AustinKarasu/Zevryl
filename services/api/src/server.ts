@@ -464,6 +464,15 @@ async function sendRecoveryEmail(to: string, recoveryUrl: string) {
   });
 }
 
+async function createRecoveryUrl(userId: string) {
+  const rawToken = randomBytes(32).toString('base64url');
+  await pool.query(
+    'insert into recovery_tokens (id,user_id,token_hash,expires_at) values ($1,$2,$3,now() + interval \'30 minutes\')',
+    [crypto.randomUUID(), userId, hashToken(rawToken)]
+  );
+  return `${env.publicAppUrl}${env.publicAppUrl.includes('?') ? '&' : '?'}resetToken=${rawToken}`;
+}
+
 let smtpTransport: nodemailer.Transporter | null = null;
 
 function getSmtpTransport() {
@@ -504,6 +513,52 @@ async function sendEmail({ to, subject, text }: { to: string; subject: string; t
     })
   });
   return response.ok;
+}
+
+type MailRecipient = { email: string; display_name?: string; username?: string };
+
+function recipientName(recipient: MailRecipient) {
+  return recipient.display_name || recipient.username || 'there';
+}
+
+async function sendBulkEmail(recipients: MailRecipient[], subject: string, makeText: (recipient: MailRecipient) => string) {
+  let sent = 0;
+  let failed = 0;
+  for (let index = 0; index < recipients.length; index += 10) {
+    const batch = recipients.slice(index, index + 10);
+    const results = await Promise.allSettled(batch.map(recipient => sendEmail({ to: recipient.email, subject, text: makeText(recipient) })));
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value) sent += 1;
+      else failed += 1;
+    }
+  }
+  return { sent, failed };
+}
+
+async function audienceRecipients(audience: 'all' | 'active' | 'staff' = 'all') {
+  const where = audience === 'staff'
+    ? `where role in ('staff','admin') and is_banned=false`
+    : audience === 'active'
+      ? `where is_banned=false and active_at > now() - interval '30 days'`
+      : `where is_banned=false`;
+  const rows = await pool.query(`select email, display_name, username from users ${where} order by created_at asc`);
+  return rows.rows as MailRecipient[];
+}
+
+function contentEmailText(recipient: MailRecipient, title: string, message: string, extra: { imageUrl?: string; fileUrl?: string; linkUrl?: string; ctaLabel?: string } = {}) {
+  return [
+    `Hi ${recipientName(recipient)},`,
+    '',
+    title,
+    '',
+    message,
+    '',
+    extra.linkUrl ? `${extra.ctaLabel || 'Open'}: ${extra.linkUrl}` : '',
+    extra.imageUrl ? `Image: ${extra.imageUrl}` : '',
+    extra.fileUrl ? `Attachment: ${extra.fileUrl}` : '',
+    '',
+    'You are receiving this because you have a Zevryl account.'
+  ].filter(line => line !== '').join('\n');
 }
 
 async function sendOtpEmail(to: string, code: string, purpose: 'register' | 'login') {
@@ -594,6 +649,7 @@ async function sendLoginAlert(user: any, request: any) {
   const location = await approximateIpLocation(ip);
   const userAgent = request.headers['user-agent'] || 'Unknown user agent';
   const when = new Date().toISOString();
+  const recoveryUrl = await createRecoveryUrl(user.id);
   await sendEmail({
     to: user.email,
     subject: 'New login to your Zevryl account',
@@ -608,7 +664,9 @@ async function sendLoginAlert(user: any, request: any) {
       `Model/User agent: ${userAgent}`,
       `Time: ${when}`,
       '',
-      'If this was not you, change your password and log out all devices from Settings > Devices.'
+      'If this was not you, reset your password. Password reset logs out every device on your account.',
+      '',
+      recoveryUrl
     ].join('\n')
   }).catch(() => false);
 }
@@ -690,6 +748,47 @@ async function ticketWithUpdates(row: any) {
     createdAt: row.created_at,
     updates: updates.rows.map(update => ({ by: update.by_user_id ?? 'system', note: update.note, at: update.created_at }))
   };
+}
+
+function ticketTranscript(ticket: Awaited<ReturnType<typeof ticketWithUpdates>>) {
+  return [
+    `Ticket: ${ticket.subject}`,
+    `Status: ${ticket.status}`,
+    `Type: ${ticket.type}`,
+    `Created: ${ticket.createdAt}`,
+    ticket.closedAt ? `Closed: ${ticket.closedAt}` : '',
+    '',
+    ticket.body,
+    '',
+    ...(ticket.updates ?? []).map(update => `[${update.at}] ${update.by}: ${update.note}`)
+  ].filter(Boolean).join('\n');
+}
+
+async function ticketEmailRecipients(ticket: Awaited<ReturnType<typeof ticketWithUpdates>>) {
+  const owner = (await pool.query('select email, display_name, username from users where id=$1', [ticket.userId])).rows[0] as MailRecipient | undefined;
+  const staff = await audienceRecipients('staff');
+  const unique = new Map<string, MailRecipient>();
+  for (const recipient of [owner, ...staff]) {
+    if (recipient?.email) unique.set(recipient.email.toLowerCase(), recipient);
+  }
+  return [...unique.values()];
+}
+
+async function sendTicketEmail(ticket: Awaited<ReturnType<typeof ticketWithUpdates>>, event: 'created' | 'updated' | 'closed', actorId?: string, note?: string) {
+  const recipients = await ticketEmailRecipients(ticket);
+  const subjectPrefix = event === 'created' ? 'Ticket created' : event === 'closed' ? 'Ticket closed' : 'Ticket reply';
+  const transcript = ticketTranscript(ticket);
+  await sendBulkEmail(recipients, `${subjectPrefix}: ${ticket.subject}`, recipient => [
+    `Hi ${recipientName(recipient)},`,
+    '',
+    `Ticket #${ticket.id.slice(0, 8)} was ${event}.`,
+    actorId ? `Actor: ${actorId}` : '',
+    note ? `Latest reply: ${note}` : '',
+    '',
+    event === 'closed' ? 'Transcript for download/save:' : 'Ticket thread:',
+    '',
+    transcript
+  ].filter(Boolean).join('\n')).catch(error => app.log.warn({ err: error, ticketId: ticket.id }, 'Ticket email failed'));
 }
 
 async function storyWithComments(row: any) {
@@ -961,12 +1060,7 @@ app.post('/auth/forgot-password', { config: { rateLimit: recoveryRateLimit } }, 
   const body = z.object({ email }).parse(request.body);
   const user = (await pool.query('select * from users where email=$1 and is_banned=false', [body.email])).rows[0];
   if (!user) return { ok: true, delivery: 'accepted' };
-  const rawToken = randomBytes(32).toString('base64url');
-  const recoveryUrl = `${env.publicAppUrl}${env.publicAppUrl.includes('?') ? '&' : '?'}resetToken=${rawToken}`;
-  await pool.query(
-    'insert into recovery_tokens (id,user_id,token_hash,expires_at) values ($1,$2,$3,now() + interval \'30 minutes\')',
-    [crypto.randomUUID(), user.id, hashToken(rawToken)]
-  );
+  const recoveryUrl = await createRecoveryUrl(user.id);
   const sent = await sendRecoveryEmail(user.email, recoveryUrl).catch(() => false);
   if (!sent) {
     const ticketId = crypto.randomUUID();
@@ -1705,7 +1799,9 @@ app.post('/tickets', async request => {
   await pool.query('insert into tickets (id,user_id,type,subject,body,proof_url,target_user_id) values ($1,$2,$3,$4,$5,$6,$7)', [id, request.auth!.id, body.type, body.subject, body.body, body.proofUrl, body.targetUserId]);
   if (body.type === 'report') await pool.query('insert into reports (id,reporter_id,type,reason,proof_url,target_user_id) values ($1,$2,$3,$4,$5,$6)', [crypto.randomUUID(), request.auth!.id, 'user', body.body, body.proofUrl, body.targetUserId]);
   await audit(request.auth!.id, 'ticket.create', 'ticket', id);
-  return ticketWithUpdates((await pool.query('select * from tickets where id=$1', [id])).rows[0]);
+  const full = await ticketWithUpdates((await pool.query('select * from tickets where id=$1', [id])).rows[0]);
+  sendTicketEmail(full, 'created', request.auth!.id).catch(() => undefined);
+  return full;
 });
 
 app.patch('/tickets/:id', async request => {
@@ -1722,7 +1818,11 @@ app.patch('/tickets/:id', async request => {
   if (body.action === 'reopen') await pool.query('update tickets set status=$2, closed_at=null where id=$1', [params.id, 'open']);
   if (body.status) await pool.query('update tickets set status=$2 where id=$1', [params.id, body.status]);
   if (body.action === 'ban' && isStaff && ticket.target_user_id) await pool.query('update users set is_banned=true where id=$1', [ticket.target_user_id]);
-  return ticketWithUpdates((await pool.query('select * from tickets where id=$1', [params.id])).rows[0]);
+  const full = await ticketWithUpdates((await pool.query('select * from tickets where id=$1', [params.id])).rows[0]);
+  if (body.note?.trim() || body.action === 'close' || body.status === 'closed') {
+    sendTicketEmail(full, full.status === 'closed' ? 'closed' : 'updated', request.auth!.id, body.note?.trim()).catch(() => undefined);
+  }
+  return full;
 });
 
 app.delete('/tickets/:id', async request => {
@@ -1736,8 +1836,11 @@ app.get('/tickets/:id/download', async request => {
   const params = z.object({ id: uuid }).parse(request.params);
   const ticket = (await pool.query('select * from tickets where id=$1', [params.id])).rows[0];
   if (!ticket) throw app.httpErrors.notFound('Ticket not found.');
+  const isOwner = ticket.user_id === request.auth!.id;
+  const isStaff = request.auth!.role === 'staff' || request.auth!.role === 'admin';
+  if (!isOwner && !isStaff) throw app.httpErrors.forbidden('You cannot access this ticket.');
   const full = await ticketWithUpdates(ticket);
-  return [`Ticket: ${full.subject}`, `Status: ${full.status}`, `Type: ${full.type}`, '', full.body, '', ...(full.updates ?? []).map(update => `[${update.at}] ${update.by}: ${update.note}`)].join('\n');
+  return ticketTranscript(full);
 });
 
 app.get('/admin/stats', async request => {
@@ -1897,6 +2000,10 @@ app.post('/admin/announcements', async request => {
   const id = crypto.randomUUID();
   await pool.query('insert into announcements (id,title,body,created_by,is_popup,pin_to_home,image_url,link_url,link_label) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)', [id, body.title, body.body, request.auth!.id, body.isPopup, body.pinToHome, body.imageUrl, body.linkUrl, body.linkLabel]);
   await audit(request.auth!.id, 'announcement.create', 'announcement', id);
+  audienceRecipients('all')
+    .then(recipients => sendBulkEmail(recipients, `Zevryl announcement: ${body.title}`, recipient => contentEmailText(recipient, body.title, body.body, { imageUrl: body.imageUrl, linkUrl: body.linkUrl, ctaLabel: body.linkLabel || 'Open announcement' })))
+    .then(result => audit(request.auth!.id, 'announcement.email_sent', 'announcement', id, result))
+    .catch(error => app.log.warn({ err: error, announcementId: id }, 'Announcement email failed'));
   return { id, title: body.title, body: body.body, imageUrl: body.imageUrl, linkUrl: body.linkUrl, linkLabel: body.linkLabel, createdAt: new Date().toISOString(), isPopup: body.isPopup, pinToHome: body.pinToHome };
 });
 
@@ -1912,7 +2019,33 @@ app.post('/admin/blogs', async request => {
   const body = z.object({ title: z.string().min(2), body: z.string().min(2), category: z.string().default('Update'), pinned: z.boolean().default(false), imageUrl: z.string().optional(), linkUrl: z.string().optional(), linkLabel: z.string().optional() }).parse(request.body);
   const id = crypto.randomUUID();
   await pool.query('insert into blogs (id,title,body,category,pinned,image_url,link_url,link_label,author_id) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)', [id, body.title, body.body, body.category, body.pinned, body.imageUrl, body.linkUrl, body.linkLabel, request.auth!.id]);
+  audienceRecipients('all')
+    .then(recipients => sendBulkEmail(recipients, `Zevryl ${body.category}: ${body.title}`, recipient => contentEmailText(recipient, body.title, body.body, { imageUrl: body.imageUrl, linkUrl: body.linkUrl, ctaLabel: body.linkLabel || 'Read more' })))
+    .then(result => audit(request.auth!.id, 'blog.email_sent', 'blog', id, result))
+    .catch(error => app.log.warn({ err: error, blogId: id }, 'Blog email failed'));
   return { id, title: body.title, body: body.body, category: body.category, pinned: body.pinned, imageUrl: body.imageUrl, linkUrl: body.linkUrl, linkLabel: body.linkLabel, authorName: 'Admin', createdAt: new Date().toISOString() };
+});
+
+app.post('/admin/email', { config: { rateLimit: { max: 3, timeWindow: '1 hour' } } }, async request => {
+  requireRole(request, ['admin']);
+  const body = z.object({
+    audience: z.enum(['all', 'active', 'staff']).default('all'),
+    title: z.string().min(2).max(160),
+    message: z.string().min(2).max(12000),
+    imageUrl: z.string().url().optional().or(z.literal('')),
+    fileUrl: z.string().url().optional().or(z.literal('')),
+    linkUrl: z.string().url().optional().or(z.literal('')),
+    ctaLabel: z.string().max(80).optional()
+  }).parse(request.body);
+  const recipients = await audienceRecipients(body.audience);
+  const result = await sendBulkEmail(recipients, body.title, recipient => contentEmailText(recipient, body.title, body.message, {
+    imageUrl: body.imageUrl || undefined,
+    fileUrl: body.fileUrl || undefined,
+    linkUrl: body.linkUrl || undefined,
+    ctaLabel: body.ctaLabel || 'Open link'
+  }));
+  await audit(request.auth!.id, 'admin.email_send', 'email', request.auth!.id, { audience: body.audience, title: body.title, ...result });
+  return { ok: true, ...result };
 });
 
 app.get('/admin/badges', async request => {
@@ -1957,12 +2090,32 @@ app.post('/admin/users/moderate', async request => {
   if (body.action === 'ban') await pool.query('update users set is_banned=true where id=$1', [body.userId]);
   if (body.action === 'unban') await pool.query('update users set is_banned=false where id=$1', [body.userId]);
   if (body.action === 'mute') await pool.query('update users set muted_until=now() + ($2::int || \' hours\')::interval where id=$1', [body.userId, body.hours ?? 8]);
+  const target = (await pool.query('select email, display_name, username, muted_until from users where id=$1', [body.userId])).rows[0];
   await audit(request.auth!.id, `punishment.${body.action}`, 'punishment', body.userId, {
     action: body.action,
     hours: body.action === 'mute' ? body.hours ?? 8 : body.hours,
     reason: body.reason || 'No reason provided.'
   });
   await audit(request.auth!.id, `user.${body.action}`, 'user', body.userId, { reason: body.reason, hours: body.hours });
+  if (target?.email) {
+    const now = new Date().toISOString();
+    const duration = body.action === 'mute' ? `${body.hours ?? 8} hour(s)` : body.action === 'ban' ? 'Until staff lifts the ban' : 'Ended';
+    sendEmail({
+      to: target.email,
+      subject: `Zevryl account ${body.action}`,
+      text: [
+        `Hi ${recipientName(target)},`,
+        '',
+        `Action: ${body.action}`,
+        `Time: ${now}`,
+        `Reason: ${body.reason || 'No reason provided.'}`,
+        `Duration: ${duration}`,
+        target.muted_until ? `Muted until: ${target.muted_until}` : '',
+        '',
+        'If you believe this is a mistake, reply through a support ticket in Zevryl.'
+      ].filter(Boolean).join('\n')
+    }).catch(error => app.log.warn({ err: error, userId: body.userId }, 'Punishment email failed'));
+  }
   return { ok: true };
 });
 
