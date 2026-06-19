@@ -27,7 +27,9 @@ const env = {
   publicAppUrl: process.env.PUBLIC_APP_URL ?? 'https://github.com/AustinKarasu/Zevryl/releases/latest',
   resendApiKey: process.env.RESEND_API_KEY ?? '',
   mailFrom: process.env.MAIL_FROM ?? 'Zevryl <noreply@zevryl.app>',
-  databasePoolMax: Number(process.env.DATABASE_POOL_MAX ?? 40)
+  databasePoolMax: Number(process.env.DATABASE_POOL_MAX ?? 40),
+  giphyApiKey: process.env.GIPHY_API_KEY ?? '',
+  tenorApiKey: process.env.TENOR_API_KEY ?? ''
 };
 
 const app = Fastify({ logger: true });
@@ -233,6 +235,7 @@ async function migrate() {
     alter table users add column if not exists profile_links boolean not null default true;
     alter table users add column if not exists two_factor_secret text;
     alter table users add column if not exists muted_until timestamptz;
+    alter table sessions add column if not exists created_at timestamptz not null default now();
     alter table messages add column if not exists pinned boolean not null default false;
     alter table reports add column if not exists proof_url text;
     alter table reports add column if not exists target_user_id uuid references users(id) on delete set null;
@@ -374,6 +377,14 @@ function hashToken(token: string) {
 }
 
 async function sendRecoveryEmail(to: string, recoveryUrl: string) {
+  return sendEmail({
+    to,
+    subject: 'Reset your Zevryl password',
+    text: `Use this link to reset your Zevryl password. It expires in 30 minutes.\n\n${recoveryUrl}`
+  });
+}
+
+async function sendEmail({ to, subject, text }: { to: string; subject: string; text: string }) {
   if (!env.resendApiKey) return false;
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -384,11 +395,55 @@ async function sendRecoveryEmail(to: string, recoveryUrl: string) {
     body: JSON.stringify({
       from: env.mailFrom,
       to,
-      subject: 'Reset your Zevryl password',
-      text: `Use this link to reset your Zevryl password. It expires in 30 minutes.\n\n${recoveryUrl}`
+      subject,
+      text
     })
   });
   return response.ok;
+}
+
+function requestDeviceName(request: any) {
+  const header = request.headers['x-zevryl-device'];
+  const value = Array.isArray(header) ? header[0] : header;
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 160) : undefined;
+}
+
+async function approximateIpLocation(ip: string) {
+  if (!ip || ip === '127.0.0.1' || ip === '::1' || ip.startsWith('::ffff:127.')) return 'Local network';
+  const cleanIp = ip.replace(/^::ffff:/, '');
+  try {
+    const response = await fetch(`https://ipapi.co/${encodeURIComponent(cleanIp)}/json/`);
+    if (!response.ok) return 'Unknown';
+    const data = await response.json() as { city?: string; region?: string; country_name?: string };
+    return [data.city, data.region, data.country_name].filter(Boolean).join(', ') || 'Unknown';
+  } catch {
+    return 'Unknown';
+  }
+}
+
+async function sendLoginAlert(user: any, request: any) {
+  const device = requestDeviceName(request) || 'Unknown device';
+  const ip = request.ip || 'Unknown IP';
+  const location = await approximateIpLocation(ip);
+  const userAgent = request.headers['user-agent'] || 'Unknown user agent';
+  const when = new Date().toISOString();
+  await sendEmail({
+    to: user.email,
+    subject: 'New login to your Zevryl account',
+    text: [
+      `Hi ${user.display_name || user.username},`,
+      '',
+      'Your Zevryl account was just used to sign in.',
+      '',
+      `Device: ${device}`,
+      `IP: ${ip}`,
+      `Location: ${location}`,
+      `Model/User agent: ${userAgent}`,
+      `Time: ${when}`,
+      '',
+      'If this was not you, change your password and log out all devices from Settings > Devices.'
+    ].join('\n')
+  }).catch(() => false);
 }
 
 function requireRole(request: any, roles: Auth['role'][]) {
@@ -520,6 +575,40 @@ async function notifyCall(roomName: string, senderId: string, kind: 'voice' | 'v
   }).catch(() => undefined);
 }
 
+const fallbackGifs = [
+  { id: 'fallback-wave', url: 'https://media.giphy.com/media/111ebonMs90YLu/giphy.gif', previewUrl: 'https://media.giphy.com/media/111ebonMs90YLu/giphy.gif', title: 'Wave', source: 'fallback' },
+  { id: 'fallback-wow', url: 'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif', previewUrl: 'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif', title: 'Wow', source: 'fallback' },
+  { id: 'fallback-laugh', url: 'https://media.giphy.com/media/ely3apij36BJhoZ234/giphy.gif', previewUrl: 'https://media.giphy.com/media/ely3apij36BJhoZ234/giphy.gif', title: 'Laugh', source: 'fallback' }
+] as const;
+
+async function searchProviderGifs(q: string, limit: number) {
+  const [giphy, tenor] = await Promise.all([
+    env.giphyApiKey
+      ? fetch(`https://api.giphy.com/v1/gifs/search?api_key=${encodeURIComponent(env.giphyApiKey)}&q=${encodeURIComponent(q)}&limit=${Math.min(limit, 50)}&rating=pg-13&lang=en`)
+          .then(response => response.ok ? response.json() : null)
+          .catch(() => null)
+      : null,
+    env.tenorApiKey
+      ? fetch(`https://tenor.googleapis.com/v2/search?key=${encodeURIComponent(env.tenorApiKey)}&q=${encodeURIComponent(q)}&limit=${Math.min(limit, 50)}&media_filter=gif,tinygif&contentfilter=medium`)
+          .then(response => response.ok ? response.json() : null)
+          .catch(() => null)
+      : null
+  ]);
+  const results: Array<{ id: string; url: string; previewUrl?: string; title?: string; source: 'giphy' | 'tenor' | 'fallback' }> = [];
+  for (const item of Array.isArray(giphy?.data) ? giphy.data : []) {
+    const url = item?.images?.original?.url || item?.images?.downsized?.url;
+    if (url) results.push({ id: `giphy-${item.id}`, url, previewUrl: item?.images?.fixed_width_small?.url || url, title: item.title, source: 'giphy' });
+  }
+  for (const item of Array.isArray(tenor?.results) ? tenor.results : []) {
+    const media = item?.media_formats ?? {};
+    const url = media.gif?.url || media.mediumgif?.url || media.tinygif?.url;
+    if (url) results.push({ id: `tenor-${item.id}`, url, previewUrl: media.tinygif?.url || url, title: item.content_description, source: 'tenor' });
+  }
+  const unique = new Map<string, typeof results[number]>();
+  for (const item of results) unique.set(item.url, item);
+  return Array.from(unique.values()).slice(0, limit);
+}
+
 async function bootstrapAdmin() {
   if (!env.adminEmail || !env.adminPassword) return;
   const exists = await pool.query('select id from users where email=$1', [env.adminEmail.toLowerCase()]);
@@ -533,12 +622,23 @@ async function bootstrapAdmin() {
 app.register(sensible);
 app.register(helmet);
 app.register(cors, { origin: true });
-app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
+app.register(rateLimit, {
+  max: 120,
+  timeWindow: '1 minute',
+  keyGenerator: request => `${request.ip}:${request.routeOptions.url ?? request.url}`
+});
+
+const authRateLimit = { max: 8, timeWindow: '1 minute' };
+const recoveryRateLimit = { max: 3, timeWindow: '15 minutes' };
 
 app.addHook('preHandler', async request => {
   const url = request.routeOptions.url ?? '';
   if (url.startsWith('/auth/') || url === '/health' || url === '/app/latest') return;
   await requireAuth(request);
+  await pool.query(
+    'update sessions set last_seen_at=now() where user_id=$1 and ip_address=$2 and user_agent is not distinct from $3 and revoked_at is null',
+    [request.auth!.id, request.ip, request.headers['user-agent']]
+  ).catch(() => undefined);
 });
 
 app.get('/health', async () => {
@@ -553,7 +653,7 @@ app.get('/health', async () => {
   return { ok: true, database: db.rows[0].ok === 1, redis: redisStatus };
 });
 
-app.post('/auth/register', async request => {
+app.post('/auth/register', { config: { rateLimit: authRateLimit } }, async request => {
   const body = z.object({ fullName: z.string().min(2), email, username: z.string().min(3), password: z.string().min(8) }).parse(request.body);
   const id = crypto.randomUUID();
   const discriminator = String(Math.floor(1000 + Math.random() * 9000));
@@ -561,12 +661,12 @@ app.post('/auth/register', async request => {
   const user = toUser((await pool.query('select * from users where id=$1', [id])).rows[0]);
   const accessToken = await sign({ id, role: user.role }, 'access');
   const refreshToken = await sign({ id, role: user.role }, 'refresh');
-  await pool.query('insert into sessions (id,user_id,refresh_token_hash,user_agent,ip_address) values ($1,$2,$3,$4,$5)', [crypto.randomUUID(), id, await argon2.hash(refreshToken), request.headers['user-agent'], request.ip]);
+  await pool.query('insert into sessions (id,user_id,refresh_token_hash,device_name,user_agent,ip_address) values ($1,$2,$3,$4,$5,$6)', [crypto.randomUUID(), id, await argon2.hash(refreshToken), requestDeviceName(request), request.headers['user-agent'], request.ip]);
   await audit(id, 'auth.register', 'user', id);
   return { user, accessToken, refreshToken };
 });
 
-app.post('/auth/login', async request => {
+app.post('/auth/login', { config: { rateLimit: authRateLimit } }, async request => {
   const body = z.object({ emailOrUsername: z.string().min(1), password: z.string().min(1) }).parse(request.body);
   const result = await pool.query('select * from users where (email=$1 or username=$1) and is_banned=false', [body.emailOrUsername.toLowerCase()]);
   const row = result.rows[0];
@@ -575,12 +675,13 @@ app.post('/auth/login', async request => {
   const user = toUser({ ...row, presence: 'online', active_at: new Date().toISOString(), last_ip: request.ip });
   const accessToken = await sign({ id: user.id, role: user.role }, 'access');
   const refreshToken = await sign({ id: user.id, role: user.role }, 'refresh');
-  await pool.query('insert into sessions (id,user_id,refresh_token_hash,user_agent,ip_address) values ($1,$2,$3,$4,$5)', [crypto.randomUUID(), user.id, await argon2.hash(refreshToken), request.headers['user-agent'], request.ip]);
+  await pool.query('insert into sessions (id,user_id,refresh_token_hash,device_name,user_agent,ip_address) values ($1,$2,$3,$4,$5,$6)', [crypto.randomUUID(), user.id, await argon2.hash(refreshToken), requestDeviceName(request), request.headers['user-agent'], request.ip]);
   await audit(user.id, 'auth.login', 'user', user.id);
+  sendLoginAlert(row, request).catch(() => undefined);
   return { user, accessToken, refreshToken };
 });
 
-app.post('/auth/refresh', async request => {
+app.post('/auth/refresh', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async request => {
   const body = z.object({ refreshToken: z.string().min(20) }).parse(request.body);
   let verified;
   try {
@@ -605,7 +706,7 @@ app.post('/auth/refresh', async request => {
   return { user: toUser(user), accessToken: await sign(auth, 'access'), refreshToken: body.refreshToken };
 });
 
-app.post('/auth/forgot-password', async request => {
+app.post('/auth/forgot-password', { config: { rateLimit: recoveryRateLimit } }, async request => {
   const body = z.object({ email }).parse(request.body);
   const user = (await pool.query('select * from users where email=$1 and is_banned=false', [body.email])).rows[0];
   if (!user) return { ok: true, delivery: 'accepted' };
@@ -647,8 +748,21 @@ app.post('/auth/reset-password', async request => {
 app.post('/auth/otp/request', async () => ({ ok: true }));
 app.post('/auth/otp/verify', async () => ({ ok: true }));
 app.post('/auth/logout', async request => {
+  await requireAuth(request);
   await pool.query('update users set presence=$1 where id=$2', ['offline', request.auth!.id]);
+  await pool.query(
+    'update sessions set revoked_at=now() where user_id=$1 and ip_address=$2 and user_agent is not distinct from $3 and revoked_at is null',
+    [request.auth!.id, request.ip, request.headers['user-agent']]
+  );
   await audit(request.auth!.id, 'auth.logout', 'user', request.auth!.id);
+  return { ok: true };
+});
+
+app.post('/auth/logout-all', async request => {
+  await requireAuth(request);
+  await pool.query('update sessions set revoked_at=now() where user_id=$1 and revoked_at is null', [request.auth!.id]);
+  await pool.query('update users set presence=$1 where id=$2', ['offline', request.auth!.id]);
+  await audit(request.auth!.id, 'auth.logout_all', 'user', request.auth!.id);
   return { ok: true };
 });
 
@@ -656,6 +770,28 @@ app.get('/me', async request => {
   const row = (await pool.query('select * from users where id=$1', [request.auth!.id])).rows[0];
   if (!row) throw app.httpErrors.notFound('Account not found.');
   return toUser(row);
+});
+
+app.get('/me/sessions', async request => {
+  const rows = await pool.query(
+    `select id, device_name, ip_address, user_agent, created_at, last_seen_at, revoked_at,
+            (ip_address=$2 and user_agent is not distinct from $3 and revoked_at is null) as current
+     from sessions
+     where user_id=$1
+     order by revoked_at is null desc, last_seen_at desc, created_at desc
+     limit 50`,
+    [request.auth!.id, request.ip, request.headers['user-agent']]
+  );
+  return rows.rows.map(row => ({
+    id: row.id,
+    deviceName: row.device_name ?? undefined,
+    ipAddress: row.ip_address ?? undefined,
+    userAgent: row.user_agent ?? undefined,
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at,
+    revokedAt: row.revoked_at ?? undefined,
+    current: row.current
+  }));
 });
 
 app.patch('/me/profile', async request => {
@@ -723,14 +859,34 @@ app.post('/me/2fa/disable', async request => {
 
 app.get('/friends', async request => {
   const userId = request.auth!.id;
-  const friends = await pool.query(`select u.* from users u join friendships f on (f.user_a=$1 and f.user_b=u.id) or (f.user_b=$1 and f.user_a=u.id)`, [userId]);
-  const incoming = await pool.query(`select fr.*, from_u.*, to_u.id as to_id from friend_requests fr join users from_u on from_u.id=fr.from_user_id join users to_u on to_u.id=fr.to_user_id where fr.to_user_id=$1 and fr.status='pending'`, [userId]);
-  const outgoing = await pool.query(`select fr.*, to_u.* from friend_requests fr join users to_u on to_u.id=fr.to_user_id where fr.from_user_id=$1 and fr.status='pending'`, [userId]);
+  const friends = await pool.query(
+    `select u.* from users u
+     join friendships f on (f.user_a=$1 and f.user_b=u.id) or (f.user_b=$1 and f.user_a=u.id)
+     left join blocks b on b.blocker_id=$1 and b.blocked_id=u.id
+     where b.blocked_id is null`,
+    [userId]
+  );
+  const incoming = await pool.query(
+    `select fr.*, from_u.*, to_u.id as to_id from friend_requests fr
+     join users from_u on from_u.id=fr.from_user_id
+     join users to_u on to_u.id=fr.to_user_id
+     left join blocks b on b.blocker_id=$1 and b.blocked_id=from_u.id
+     where fr.to_user_id=$1 and fr.status='pending' and b.blocked_id is null`,
+    [userId]
+  );
+  const outgoing = await pool.query(
+    `select fr.*, to_u.* from friend_requests fr
+     join users to_u on to_u.id=fr.to_user_id
+     left join blocks b on b.blocker_id=$1 and b.blocked_id=to_u.id
+     where fr.from_user_id=$1 and fr.status='pending' and b.blocked_id is null`,
+    [userId]
+  );
+  const blocked = await pool.query(`select u.* from users u join blocks b on b.blocked_id=u.id where b.blocker_id=$1 order by b.created_at desc`, [userId]);
   return {
     friends: friends.rows.map(toUser),
     incoming: incoming.rows.map(row => ({ id: row.id, fromUser: toUser(row), toUser: toUser({ ...row, id: row.to_id }), status: row.status, createdAt: row.created_at })),
     outgoing: outgoing.rows.map(row => ({ id: row.id, fromUser: toUser({ ...row, id: userId }), toUser: toUser(row), status: row.status, createdAt: row.created_at })),
-    blocked: []
+    blocked: blocked.rows.map(toUser)
   };
 });
 
@@ -749,7 +905,7 @@ app.post('/friends/requests/:id/accept', async request => {
   const params = z.object({ id: uuid }).parse(request.params);
   const req = (await pool.query('select * from friend_requests where id=$1 and to_user_id=$2 and status=$3', [params.id, request.auth!.id, 'pending'])).rows[0];
   if (!req) throw app.httpErrors.notFound('Request not found.');
-  await pool.query('update friend_requests set status=$1, responded_at=now() where id=$2', ['accepted', params.id]);
+  await pool.query('update friend_requests set status=$1, responded_at=now() where id=$2 and status=$3', ['accepted', params.id, 'pending']);
   await pool.query('insert into friendships (user_a,user_b) values ($1,$2) on conflict do nothing', [req.from_user_id, req.to_user_id]);
   await audit(request.auth!.id, 'friend.accept', 'friend_request', params.id);
   return { ok: true };
@@ -757,7 +913,8 @@ app.post('/friends/requests/:id/accept', async request => {
 
 app.post('/friends/requests/:id/deny', async request => {
   const params = z.object({ id: uuid }).parse(request.params);
-  await pool.query('update friend_requests set status=$1, responded_at=now() where id=$2 and to_user_id=$3', ['denied', params.id, request.auth!.id]);
+  const row = (await pool.query('update friend_requests set status=$1, responded_at=now() where id=$2 and to_user_id=$3 and status=$4 returning id', ['denied', params.id, request.auth!.id, 'pending'])).rows[0];
+  if (!row) throw app.httpErrors.notFound('Request not found.');
   await audit(request.auth!.id, 'friend.deny', 'friend_request', params.id);
   return { ok: true };
 });
@@ -781,7 +938,16 @@ app.post('/friends/:id/block', async request => {
   const params = z.object({ id: uuid }).parse(request.params);
   await pool.query('insert into blocks (blocker_id,blocked_id) values ($1,$2) on conflict do nothing', [request.auth!.id, params.id]);
   await pool.query('delete from friendships where (user_a=$1 and user_b=$2) or (user_a=$2 and user_b=$1)', [request.auth!.id, params.id]);
+  await pool.query('delete from friend_requests where ((from_user_id=$1 and to_user_id=$2) or (from_user_id=$2 and to_user_id=$1)) and status=$3', [request.auth!.id, params.id, 'pending']);
   await audit(request.auth!.id, 'friend.block', 'user', params.id);
+  return { ok: true };
+});
+
+app.post('/friends/:id/unblock', async request => {
+  const params = z.object({ id: uuid }).parse(request.params);
+  const row = (await pool.query('delete from blocks where blocker_id=$1 and blocked_id=$2 returning blocked_id', [request.auth!.id, params.id])).rows[0];
+  if (!row) throw app.httpErrors.notFound('Blocked user not found.');
+  await audit(request.auth!.id, 'friend.unblock', 'user', params.id);
   return { ok: true };
 });
 
@@ -886,6 +1052,11 @@ app.get('/conversations', async request => {
 
 app.post('/conversations/dm', async request => {
   const body = z.object({ userId: uuid }).parse(request.body);
+  const blocked = (await pool.query(
+    'select 1 from blocks where (blocker_id=$1 and blocked_id=$2) or (blocker_id=$2 and blocked_id=$1) limit 1',
+    [request.auth!.id, body.userId]
+  )).rows[0];
+  if (blocked) throw app.httpErrors.forbidden('You cannot start a DM with this user.');
   const existing = (await pool.query(
     `select c.* from conversations c
      join conversation_members a on a.conversation_id=c.id and a.user_id=$1
@@ -911,6 +1082,10 @@ app.post('/conversations/:id/mute', async request => {
 app.post('/conversations/:id/block', async request => {
   const params = z.object({ id: uuid }).parse(request.params);
   await pool.query('update conversation_members set blocked_at=now() where conversation_id=$1 and user_id=$2', [params.id, request.auth!.id]);
+  const others = await pool.query('select user_id from conversation_members where conversation_id=$1 and user_id<>$2', [params.id, request.auth!.id]);
+  for (const other of others.rows) {
+    await pool.query('insert into blocks (blocker_id,blocked_id) values ($1,$2) on conflict do nothing', [request.auth!.id, other.user_id]);
+  }
   return { ok: true };
 });
 
@@ -949,23 +1124,46 @@ app.get('/blogs', async () => {
   return rows.rows.map(row => ({ id: row.id, title: row.title, body: row.body, imageUrl: row.image_url, linkUrl: row.link_url, linkLabel: row.link_label, category: row.category, authorName: row.display_name ?? 'Zevryl Staff', createdAt: row.created_at, pinned: row.pinned }));
 });
 
+app.get('/gifs/search', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async request => {
+  const query = z.object({ q: z.string().trim().min(1).max(80).default('hello'), limit: z.coerce.number().int().min(1).max(80).default(40) }).parse(request.query);
+  const results = await searchProviderGifs(query.q, query.limit);
+  return results.length ? results : fallbackGifs.filter(item => item.title.toLowerCase().includes(query.q.toLowerCase()) || query.q.toLowerCase().includes(item.title.toLowerCase()));
+});
+
 app.get('/messages/:conversationId', async request => {
   const params = z.object({ conversationId: uuid }).parse(request.params);
   const query = z.object({ q: z.string().optional(), pinned: z.string().optional() }).parse(request.query);
   const rows = await pool.query(
-    `select * from messages where conversation_id=$1 and deleted_at is null
-     and ($2::text is null or body ilike '%' || $2 || '%')
-     and ($3::boolean is false or pinned=true)
-     order by created_at asc limit 100`,
-    [params.conversationId, query.q ?? null, query.pinned === '1']
+    `select m.*, u.display_name as sender_name, b.blocked_id is not null as blocked_by_viewer
+     from messages m
+     left join users u on u.id=m.sender_id
+     left join blocks b on b.blocker_id=$4 and b.blocked_id=m.sender_id
+     where m.conversation_id=$1 and m.deleted_at is null
+       and ($2::text is null or m.body ilike '%' || $2 || '%')
+       and ($3::boolean is false or m.pinned=true)
+     order by m.created_at asc limit 100`,
+    [params.conversationId, query.q ?? null, query.pinned === '1', request.auth!.id]
   );
-  return rows.rows.map(toMessage);
+  return rows.rows.map(row => {
+    const message = toMessage(row);
+    if (row.blocked_by_viewer && row.sender_id !== request.auth!.id) {
+      return { ...message, blocked: true, blockedAuthorName: row.sender_name ?? 'Unknown user' };
+    }
+    return message;
+  });
 });
 
 app.post('/messages', async request => {
   const body = z.object({ conversationId: uuid, body: z.string().min(1).max(4000), type: z.enum(['text', 'image', 'video', 'file', 'gif']).default('text'), attachmentUrl: z.string().optional() }).parse(request.body);
   const mute = (await pool.query('select muted_until from users where id=$1 and muted_until > now()', [request.auth!.id])).rows[0];
   if (mute?.muted_until) throw app.httpErrors.forbidden(`You are muted until ${new Date(mute.muted_until).toLocaleString()}.`);
+  const blocked = (await pool.query(
+    `select 1 from conversation_members cm
+     join blocks b on (b.blocker_id=$2 and b.blocked_id=cm.user_id) or (b.blocker_id=cm.user_id and b.blocked_id=$2)
+     where cm.conversation_id=$1 and cm.user_id<>$2 limit 1`,
+    [body.conversationId, request.auth!.id]
+  )).rows[0];
+  if (blocked) throw app.httpErrors.forbidden('This conversation includes a blocked user.');
   const id = crypto.randomUUID();
   await pool.query('insert into messages (id,conversation_id,sender_id,body,type,attachment_url) values ($1,$2,$3,$4,$5,$6)', [id, body.conversationId, request.auth!.id, body.body, body.type, body.attachmentUrl]);
   await redis.publish('messages', JSON.stringify({ id, conversationId: body.conversationId })).catch(() => undefined);

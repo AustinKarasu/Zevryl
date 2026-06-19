@@ -43,7 +43,9 @@ import type {
   BlogPost,
   Conversation,
   DashboardStats,
+  DeviceSession,
   FriendState,
+  GifResult,
   Group,
   Message,
   Report,
@@ -56,7 +58,10 @@ import type {
 const logo = require('../assets/zevryl-logo.png');
 const wordmark = require('../assets/zevryl-wordmark.png');
 const bootCacheKey = 'zevryl.boot.cache.v1';
+const bootCacheFile = `${FileSystem.documentDirectory || ''}zevryl-boot-cache.json`;
 const bootCacheMaxAgeMs = 1000 * 60 * 60 * 24 * 7;
+const autoLoginKey = 'zevryl.security.autoLogin';
+const biometricLoginKey = 'zevryl.security.biometricLogin';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -120,7 +125,7 @@ const profileThemes: Record<NonNullable<User['profileTheme']>, { label: string; 
 };
 
 async function readBootCache() {
-  const raw = await SecureStore.getItemAsync(bootCacheKey);
+  const raw = await FileSystem.readAsStringAsync(bootCacheFile).catch(() => SecureStore.getItemAsync(bootCacheKey));
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as BootCache;
@@ -134,11 +139,13 @@ async function readBootCache() {
 
 async function writeBootCache(user: User | null, announcement: Announcement | null) {
   if (!user) {
+    await FileSystem.deleteAsync(bootCacheFile, { idempotent: true }).catch(() => undefined);
     await SecureStore.deleteItemAsync(bootCacheKey).catch(() => undefined);
     return;
   }
   const cache: BootCache = { user, announcement, savedAt: Date.now() };
-  await SecureStore.setItemAsync(bootCacheKey, JSON.stringify(cache)).catch(() => undefined);
+  await FileSystem.writeAsStringAsync(bootCacheFile, JSON.stringify(cache)).catch(() => undefined);
+  await SecureStore.deleteItemAsync(bootCacheKey).catch(() => undefined);
 }
 
 const colorChoices = [
@@ -152,24 +159,6 @@ const densityChoices = {
   comfortable: { label: 'Comfortable', scale: 1 },
   spacious: { label: 'Spacious', scale: 1.18 }
 };
-const gifs = [
-  { url: 'https://media.giphy.com/media/111ebonMs90YLu/giphy.gif', tags: 'hi hello wave yes hey welcome' },
-  { url: 'https://media.giphy.com/media/l0HlNaQ6gWfllcjDO/giphy.gif', tags: 'hi hello excited happy' },
-  { url: 'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif', tags: 'wow surprise mind blown' },
-  { url: 'https://media.giphy.com/media/3o7TKtnuHOHHUjR38Y/giphy.gif', tags: 'no noob nope stop' },
-  { url: 'https://media.giphy.com/media/5GoVLqeAOo6PK/giphy.gif', tags: 'happy excited win gg' },
-  { url: 'https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif', tags: 'bruh noob fail gaming' },
-  { url: 'https://media.giphy.com/media/ely3apij36BJhoZ234/giphy.gif', tags: 'laugh lol funny' },
-  { url: 'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif', tags: 'nice cool yes' },
-  { url: 'https://media.giphy.com/media/3oz8xIsloV7zOmt81G/giphy.gif', tags: 'facepalm fail noob' },
-  { url: 'https://media.giphy.com/media/26tOZ42Mg6pbTUPHW/giphy.gif', tags: 'angry mad frustrated' },
-  { url: 'https://media.giphy.com/media/13CoXDiaCcCoyk/giphy.gif', tags: 'pride rainbow gay love support' },
-  { url: 'https://media.giphy.com/media/3o6Zt481isNVuQI1l6/giphy.gif', tags: 'love heart pride' },
-  { url: 'https://media.giphy.com/media/3oriO0OEd9QIDdllqo/giphy.gif', tags: 'confused what huh' },
-  { url: 'https://media.giphy.com/media/ASd0Ukj0y3qMM/giphy.gif', tags: 'ok okay yes' },
-  { url: 'https://media.giphy.com/media/11sBLVxNs7v6WA/giphy.gif', tags: 'celebrate party win' },
-  { url: 'https://media.giphy.com/media/kaq6GnxDlJaBq/giphy.gif', tags: 'noob confused gaming' }
-];
 const languages = [
   ['en', 'English'], ['hi', 'Hindi'], ['bn', 'Bengali'], ['ta', 'Tamil'], ['te', 'Telugu'], ['mr', 'Marathi'], ['gu', 'Gujarati'], ['kn', 'Kannada'], ['ml', 'Malayalam'], ['pa', 'Punjabi'],
   ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['it', 'Italian'], ['pt', 'Portuguese'], ['ru', 'Russian'], ['ar', 'Arabic'], ['zh', 'Chinese'], ['ja', 'Japanese'], ['ko', 'Korean'],
@@ -265,7 +254,8 @@ const copy = {
 
 function t(language: string | undefined, key: keyof typeof copy.en) {
   const short = (language || 'en').split('-')[0] as keyof typeof copy;
-  return (copy[short] as Partial<typeof copy.en> | undefined)?.[key] || copy.en[key];
+  const catalog = short === 'es' ? copy.es : copy.en;
+  return (catalog as Partial<typeof copy.en>)[key] || copy.en[key];
 }
 
 export default function App() {
@@ -298,7 +288,32 @@ function Root() {
   useEffect(() => {
     let mounted = true;
     async function boot() {
+      const autoLogin = await SecureStore.getItemAsync(autoLoginKey).catch(() => null);
+      if (autoLogin === '0') {
+        if (mounted) {
+          setUser(null);
+          setBooting(false);
+        }
+        return;
+      }
       const hasToken = await SecureStore.getItemAsync('zevryl.accessToken').catch(() => null);
+      const biometricLogin = await SecureStore.getItemAsync(biometricLoginKey).catch(() => null);
+      if (hasToken && biometricLogin === '1') {
+        const compatible = await LocalAuthentication.hasHardwareAsync().catch(() => false);
+        const enrolled = await LocalAuthentication.isEnrolledAsync().catch(() => false);
+        if (!compatible || !enrolled) {
+          await SecureStore.deleteItemAsync(biometricLoginKey).catch(() => undefined);
+        } else {
+          const result = await LocalAuthentication.authenticateAsync({ promptMessage: 'Unlock Zevryl' }).catch(() => ({ success: false }));
+          if (!result.success) {
+            if (mounted) {
+              setUser(null);
+              setBooting(false);
+            }
+            return;
+          }
+        }
+      }
       if (hasToken) {
         const cached = await readBootCache();
         if (mounted && cached?.user) {
@@ -727,6 +742,12 @@ function FriendsScreen({ notify, setTab }: { notify: (tone: 'error' | 'success' 
       )} />
       <RequestList title="Incoming Requests" requests={state.data.incoming} person="from" onProfile={(target) => { setProfileCanUnfriend(false); setProfileUser(target); }} accept={id => action(api.acceptFriend(id), 'Request accepted.')} deny={id => action(api.denyFriend(id), 'Request denied.')} />
       <RequestList title="Outgoing Requests" requests={state.data.outgoing} person="to" onProfile={(target) => { setProfileCanUnfriend(false); setProfileUser(target); }} cancel={id => action(api.cancelFriendRequest(id), 'Request canceled.')} />
+      <UserList title="Blocked Users" users={state.data.blocked} empty="Blocked users will appear here." right={(blocked) => (
+        <View style={styles.rowActions}>
+          <IconButton icon="person-circle" onPress={() => { setProfileCanUnfriend(false); setProfileUser(blocked); }} />
+          <IconButton icon="lock-open" onPress={() => action(api.unblockFriend(blocked.id), 'User unblocked.')} />
+        </View>
+      )} />
       <ProfileSheet
         user={profileUser}
         reportReason={reportReason}
@@ -847,6 +868,7 @@ function GroupsScreen({ user, notify, setTab, openConversation }: { user: User; 
 }
 
 function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void; initialConversationId?: string; setFullscreen: (value: boolean) => void }) {
+  const insets = useSafeAreaInsets();
   const [conversations, setConversations] = useState<Loadable<Conversation[]>>({ loading: true, data: [] });
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -855,9 +877,12 @@ function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { us
   const [showGif, setShowGif] = useState(false);
   const [emojiSearch, setEmojiSearch] = useState('');
   const [gifSearch, setGifSearch] = useState('');
+  const [gifResults, setGifResults] = useState<GifResult[]>([]);
+  const [gifLoading, setGifLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [pinnedOnly, setPinnedOnly] = useState(false);
   const [profileUser, setProfileUser] = useState<User | null>(null);
+  const [revealedBlockedMessages, setRevealedBlockedMessages] = useState<Record<string, boolean>>({});
   const [reportReason, setReportReason] = useState('');
   const [reportProof, setReportProof] = useState('');
   const [activeCall, setActiveCall] = useState<CallState | null>(null);
@@ -906,6 +931,7 @@ function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { us
 
   const refreshMessages = () => selected && api.messages(selected.id, { q: search, pinned: pinnedOnly }).then(setMessages).catch(error => notify('error', error.message));
   const pinnedMessage = messages.find(message => message.pinned);
+  const selectedOther = selected?.participants.find(participant => participant.id !== user.id) || null;
   const typingText = typingUsers.length === 0
     ? ''
     : typingUsers.length === 1
@@ -915,6 +941,23 @@ function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { us
     setShowEmoji(tray === 'emoji' ? value => !value : false);
     setShowGif(tray === 'gif' ? value => !value : false);
   }
+
+  useEffect(() => {
+    if (!showGif) return;
+    const query = gifSearch.trim() || 'hello';
+    let canceled = false;
+    setGifLoading(true);
+    const timer = setTimeout(() => {
+      api.searchGifs(query, 48)
+        .then(results => { if (!canceled) setGifResults(results); })
+        .catch(error => { if (!canceled) notify('error', error.message); })
+        .finally(() => { if (!canceled) setGifLoading(false); });
+    }, 280);
+    return () => {
+      canceled = true;
+      clearTimeout(timer);
+    };
+  }, [showGif, gifSearch]);
 
   async function send(payload?: { type?: Message['type']; attachmentUrl?: string; body?: string }) {
     if (!selected) return notify('error', 'Open a DM first.');
@@ -1071,8 +1114,6 @@ function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { us
   }, []);
 
   const emojiChoices = emojis.filter(item => !emojiSearch.trim() || item.includes(emojiSearch.trim()));
-  const gifChoices = gifs.filter(item => !gifSearch.trim() || item.tags.toLowerCase().includes(gifSearch.trim().toLowerCase()));
-
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={Platform.OS === 'ios' ? 84 : 22} style={styles.flex}>
       <View style={styles.chatLayout}>
@@ -1094,10 +1135,10 @@ function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { us
         <View style={styles.thread}>
           <View style={styles.threadHeader}>
             <IconButton icon="chevron-back" onPress={() => setSelected(null)} />
-            <View style={styles.flex}>
+            <Pressable style={styles.flex} onPress={() => selected?.kind === 'dm' && selectedOther ? setProfileUser(selectedOther) : undefined}>
               <Text style={styles.cardTitle}>{selected.title}</Text>
               <Text style={styles.meta}>{selected.kind === 'group' ? `${selected.participants.length} members` : 'Private DM'}</Text>
-            </View>
+            </Pressable>
             {selected.kind === 'group' ? <IconButton icon="people" onPress={() => setShowMembers(true)} /> : null}
             <IconButton icon="call" onPress={() => startCall('voice')} />
             <IconButton icon="videocam" onPress={() => startCall('video')} />
@@ -1109,13 +1150,21 @@ function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { us
             <IconButton icon={pinnedOnly ? 'pin' : 'pin-outline'} onPress={() => setPinnedOnly(prev => !prev)} />
           </View>
           {pinnedMessage ? <Pressable style={styles.pinnedBar} onPress={() => setPinnedOnly(true)}><Ionicons name="pin" size={15} color="#E6C07A" /><Text style={styles.pinnedText} numberOfLines={1}>Pinned message: {pinnedMessage.body || pinnedMessage.attachmentUrl}</Text></Pressable> : null}
-          <ScrollView ref={messageScrollRef} contentContainerStyle={styles.messageList} keyboardShouldPersistTaps="handled" onContentSizeChange={() => messageScrollRef.current?.scrollToEnd({ animated: true })}>
+          <ScrollView ref={messageScrollRef} style={styles.flex} contentContainerStyle={styles.messageList} keyboardShouldPersistTaps="handled" onContentSizeChange={() => messageScrollRef.current?.scrollToEnd({ animated: true })}>
             {messages.length === 0 ? <EmptyState title="No messages" body="Send the first message, emoji, sticker, GIF, or image." /> : messages.map(message => {
               const author = selected.participants.find(p => p.id === message.senderId) || user;
               const topBadge = topPriorityBadge(author.badges);
+              if (message.blocked && !revealedBlockedMessages[message.id]) {
+                return (
+                  <Pressable key={message.id} style={styles.blockedMessage} onPress={() => setRevealedBlockedMessages(prev => ({ ...prev, [message.id]: true }))}>
+                    <Ionicons name="eye-off" size={15} color="#E6C07A" />
+                    <Text style={styles.blockedMessageText}>Blocked message from {message.blockedAuthorName || author.displayName}. Tap to view.</Text>
+                  </Pressable>
+                );
+              }
               return (
               <Pressable key={message.id} onLongPress={() => Alert.alert('Message', 'Choose an action', [{ text: message.pinned ? 'Unpin' : 'Pin', onPress: () => pin(message) }, ...(message.senderId === user.id ? [{ text: 'Delete', style: 'destructive' as const, onPress: () => remove(message) }] : []), { text: 'Cancel', style: 'cancel' }])} style={[styles.messageRow, message.senderId === user.id && styles.messageOwn]}>
-                <Pressable style={styles.messageAuthor} onPress={() => setProfileUser(author)}><UserAvatar user={author} size={28} /><Text style={styles.messageName}>{author.displayName}</Text>{topBadge ? <BadgeIcon badge={topBadge} /> : null}<Text style={styles.messageTimeInline}>{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>{message.pinned ? <Ionicons name="pin" size={11} color="#E6C07A" /> : null}{message.isEdited ? <Text style={styles.editedTag}>edited</Text> : null}</Pressable>
+                <Pressable style={styles.messageAuthor} onPress={() => setProfileUser(author)} onLongPress={() => setProfileUser(author)}><UserAvatar user={author} size={28} /><Text style={styles.messageName}>{author.displayName}</Text>{topBadge ? <BadgeIcon badge={topBadge} /> : null}<Text style={styles.messageTimeInline}>{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>{message.pinned ? <Ionicons name="pin" size={11} color="#E6C07A" /> : null}{message.isEdited ? <Text style={styles.editedTag}>edited</Text> : null}</Pressable>
                 <View style={[styles.messageBubble, message.senderId === user.id && styles.messageBubbleOwn]}>
                   {(message.type === 'gif' || message.type === 'image') && message.attachmentUrl ? <Image source={{ uri: message.attachmentUrl }} style={styles.chatImage} resizeMode="cover" /> : null}
                   {message.body ? <RichText text={message.body} /> : null}
@@ -1126,8 +1175,8 @@ function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { us
           </ScrollView>
           {typingText ? <Text style={styles.typingText}>{typingText}</Text> : null}
           {showEmoji && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search emoji or use your keyboard for all emoji" placeholderTextColor="#899486" value={emojiSearch} onChangeText={setEmojiSearch} /> <View style={styles.pickerRow}>{emojiChoices.map(item => <Pressable key={item} style={styles.pickerButton} onPress={() => setBody(prev => `${prev}${item}`)}><Text style={styles.emojiText}>{item}</Text></Pressable>)}</View></View>}
-          {showGif && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search GIFs" placeholderTextColor="#899486" value={gifSearch} onChangeText={setGifSearch} /><View style={styles.gifPicker}>{gifChoices.length ? gifChoices.map(item => <Pressable key={item.url} onPress={() => send({ type: 'gif', attachmentUrl: item.url, body: 'GIF' })}><Image source={{ uri: item.url }} style={styles.gifThumb} /></Pressable>) : <Text style={styles.muted}>No GIF found. Try hi, noob, wow, love, pride, or funny.</Text>}</View></View>}
-          <View style={styles.composer}>
+          {showGif && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search GIFs" placeholderTextColor="#899486" value={gifSearch} onChangeText={setGifSearch} /><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.gifPicker}>{gifLoading ? <ActivityIndicator color="#E6C07A" /> : gifResults.length ? gifResults.map(item => <Pressable key={item.id} onPress={() => send({ type: 'gif', attachmentUrl: item.url, body: item.title || 'GIF' })}><Image source={{ uri: item.previewUrl || item.url }} style={styles.gifThumb} /></Pressable>) : <Text style={styles.muted}>No GIF found. Try another search.</Text>}</ScrollView></View>}
+          <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom + 8, 14) }]}>
             <IconButton icon="happy" onPress={() => openTray('emoji')} />
             <IconButton icon="film" onPress={() => openTray('gif')} />
             <IconButton icon="attach" onPress={() => Alert.alert('Upload', 'Choose media source', [{ text: 'Photo Library', onPress: () => pickChatImage(false) }, { text: 'Camera', onPress: () => pickChatImage(true) }, { text: 'Cancel', style: 'cancel' }])} />
@@ -1413,6 +1462,21 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
   const [twoFactor, setTwoFactor] = useState<{ secret: string; qrUrl: string } | null>(null);
   const [twoFactorCode, setTwoFactorCode] = useState('');
   const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [autoLoginEnabled, setAutoLoginEnabled] = useState(true);
+  const [sessions, setSessions] = useState<Loadable<DeviceSession[]>>({ loading: false, data: [] });
+
+  useEffect(() => {
+    SecureStore.getItemAsync(biometricLoginKey).then(value => setBiometricEnabled(value === '1')).catch(() => undefined);
+    SecureStore.getItemAsync(autoLoginKey).then(value => setAutoLoginEnabled(value !== '0')).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (panel !== 'devices') return;
+    setSessions(current => ({ ...current, loading: true, error: undefined }));
+    api.sessions()
+      .then(data => setSessions({ loading: false, data }))
+      .catch(error => setSessions({ loading: false, data: [], error: error.message }));
+  }, [panel]);
   
   async function logout() {
     try {
@@ -1431,8 +1495,16 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
     if (!compatible || !enrolled) return notify('error', 'No enrolled biometric method found on this device.');
     const result = await LocalAuthentication.authenticateAsync({ promptMessage: biometricEnabled ? 'Disable biometric login' : 'Enable biometric login' });
     if (!result.success) return notify('error', 'Biometric check failed.');
+    await SecureStore.setItemAsync(biometricLoginKey, biometricEnabled ? '0' : '1');
     setBiometricEnabled(prev => !prev);
     notify('success', biometricEnabled ? 'Biometric login disabled.' : 'Biometric login enabled on this device.');
+  }
+
+  async function toggleAutoLogin() {
+    const next = !autoLoginEnabled;
+    await SecureStore.setItemAsync(autoLoginKey, next ? '1' : '0');
+    setAutoLoginEnabled(next);
+    notify('success', next ? 'Auto login enabled.' : 'Auto login disabled for future app starts.');
   }
   
   if (panel) {
@@ -1499,6 +1571,11 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
         {panel === 'security' && (
           <>
             <GlassCard>
+              <Text style={styles.cardTitle}>Auto Login</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>{autoLoginEnabled ? 'Zevryl opens directly into your account on this device.' : 'Zevryl will ask you to sign in after the app restarts.'}</Text>
+              <PrimaryButton label={autoLoginEnabled ? 'Disable Auto Login' : 'Enable Auto Login'} icon={autoLoginEnabled ? 'lock-closed' : 'lock-open'} onPress={toggleAutoLogin} />
+            </GlassCard>
+            <GlassCard>
               <Text style={styles.cardTitle}>Two-Factor Authentication</Text>
               <Text style={[styles.muted, { marginTop: 8 }]}>{user.twoFactorEnabled ? 'Authenticator login protection is enabled.' : 'Add authenticator protection to your account.'}</Text>
               {!user.twoFactorEnabled && !twoFactor && <PrimaryButton label="Setup 2FA" icon="qr-code" onPress={() => api.setup2fa().then(setTwoFactor).catch(error => notify('error', error.message))} />}
@@ -1515,7 +1592,28 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
         
         {panel === 'devices' && (
           <>
-            <GlassCard>
+            {sessions.loading ? <LoadingState /> : sessions.error ? <ErrorState message={sessions.error} onRetry={() => {
+              setSessions(current => ({ ...current, loading: true, error: undefined }));
+              api.sessions().then(data => setSessions({ loading: false, data })).catch(error => setSessions({ loading: false, data: [], error: error.message }));
+            }} /> : sessions.data.length === 0 ? <EmptyState title="No devices found" body="Your current session will appear after the next authenticated request." /> : sessions.data.map(session => (
+              <GlassCard key={session.id}>
+                <View style={styles.deviceRow}>
+                  <View style={styles.deviceIcon}>
+                    <Ionicons name={session.current ? 'phone-portrait' : 'desktop'} size={20} color="#E6C07A" />
+                  </View>
+                  <View style={styles.flex}>
+                    <Text style={styles.cardTitle}>{session.deviceName || session.userAgent || 'Unknown device'}</Text>
+                    <Text style={styles.muted}>IP {session.ipAddress || 'Unavailable'}</Text>
+                    <Text style={styles.muted}>First login {new Date(session.createdAt).toLocaleString()}</Text>
+                    <Text style={styles.muted}>Last seen {new Date(session.lastSeenAt).toLocaleString()}</Text>
+                  </View>
+                  <View style={[styles.statusBadge, session.revokedAt && styles.statusBadgeMuted]}>
+                    <Text style={styles.statusText}>{session.revokedAt ? 'Logged out' : session.current ? 'Active' : 'Previous'}</Text>
+                  </View>
+                </View>
+              </GlassCard>
+            ))}
+            {false && <GlassCard>
               <View style={styles.deviceRow}>
                 <View style={styles.deviceIcon}>
                   <Ionicons name="phone-portrait" size={20} color="#E6C07A" />
@@ -1524,20 +1622,20 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
                   <Text style={styles.cardTitle}>{Device.deviceName || 'This Device'}</Text>
                   <Text style={styles.muted}>{Device.modelName || 'Mobile'} · {Platform.OS}</Text>
                   <Text style={styles.muted}>IP {user.lastIp || 'Unavailable'}</Text>
-                  <Text style={styles.muted}>Last login {user.activeAt ? new Date(user.activeAt).toLocaleString() : 'Active now'}</Text>
+                  <Text style={styles.muted}>Last login {user.activeAt ? new Date(user.activeAt as string).toLocaleString() : 'Active now'}</Text>
                 </View>
                 <View style={styles.statusBadge}>
                   <Text style={styles.statusText}>Active</Text>
                 </View>
               </View>
-            </GlassCard>
+            </GlassCard>}
             <GlassCard>
               <Text style={styles.cardTitle}>Session Management</Text>
-              <Text style={[styles.muted, { marginTop: 8 }]}>Review this phone, login time, and session safety from your account.</Text>
+              <Text style={[styles.muted, { marginTop: 8 }]}>New logins send an email with device, IP, approximate location, model, and time.</Text>
               <PrimaryButton label="Log Out All Devices" icon="power" onPress={() => {
                 Alert.alert('Log Out All Devices', 'This will sign you out on all devices. Continue?', [
                   { text: 'Cancel', onPress: () => {}, style: 'cancel' },
-                  { text: 'Log Out', onPress: () => logout(), style: 'destructive' }
+                  { text: 'Log Out', onPress: () => api.logoutAll().finally(logout), style: 'destructive' }
                 ]);
               }} />
             </GlassCard>
@@ -2950,6 +3048,8 @@ const styles = StyleSheet.create({
   messageBubbleOther: { backgroundColor: 'rgba(30,42,33,.8)' },
   messageBubbleOwn: { backgroundColor: '#4A5934', alignSelf: 'flex-end' },
   messageBody: { color: '#F2F8F5', fontSize: 15, lineHeight: 22, fontWeight: '500' },
+  blockedMessage: { minHeight: 42, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(230,192,122,.22)', backgroundColor: 'rgba(230,192,122,.08)', paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  blockedMessageText: { color: '#EDE4C8', fontSize: 13, fontWeight: '800', flex: 1 },
   typingText: { color: '#AEB8A5', fontSize: 12, fontWeight: '700', minHeight: 20, paddingHorizontal: 8 },
   messageFooter: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 },
   messageTime: { color: '#899486', fontSize: 12, fontWeight: '600' },
@@ -3076,6 +3176,7 @@ const styles = StyleSheet.create({
   deviceRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingBottom: 12 },
   deviceIcon: { width: 40, height: 40, borderRadius: 10, backgroundColor: 'rgba(230,192,122,.14)', alignItems: 'center', justifyContent: 'center' },
   statusBadge: { backgroundColor: 'rgba(79,204,122,.14)', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
+  statusBadgeMuted: { backgroundColor: 'rgba(174,184,165,.12)' },
   statusText: { color: '#4FCC7A', fontWeight: '800', fontSize: 11 },
   permissionItem: { paddingVertical: 12 },
   colorGrid: { flexDirection: 'row', gap: 12, marginTop: 12 },

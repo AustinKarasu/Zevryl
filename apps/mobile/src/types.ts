@@ -80,6 +80,8 @@ export type Message = {
   createdAt: string;
   readBy: string[];
   reactions: Record<string, string[]>;
+  blocked?: boolean;
+  blockedAuthorName?: string;
 };
 
 export type Conversation = {
@@ -177,6 +179,25 @@ export type AppUpdate = {
   notes: string;
   apkUrl?: string;
   required?: boolean;
+};
+
+export type DeviceSession = {
+  id: string;
+  deviceName?: string;
+  ipAddress?: string;
+  userAgent?: string;
+  createdAt: string;
+  lastSeenAt: string;
+  revokedAt?: string;
+  current?: boolean;
+};
+
+export type GifResult = {
+  id: string;
+  url: string;
+  previewUrl?: string;
+  title?: string;
+  source: 'giphy' | 'tenor' | 'fallback';
 };
 
 export type AuditLog = {

@@ -1,6 +1,8 @@
 import Constants from 'expo-constants';
+import * as Device from 'expo-device';
+import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
-import type { AdminAnalytics, Announcement, AppUpdate, AuditLog, BadgeDefinition, BlogPost, Conversation, DashboardStats, FriendState, Group, Message, Report, RoleDefinition, StaffAnalytics, Ticket, User } from './types';
+import type { AdminAnalytics, Announcement, AppUpdate, AuditLog, BadgeDefinition, BlogPost, Conversation, DashboardStats, DeviceSession, FriendState, GifResult, Group, Message, Report, RoleDefinition, StaffAnalytics, Ticket, User } from './types';
 
 const configuredUrl = normalizeApiUrl(
   process.env.EXPO_PUBLIC_API_URL ||
@@ -10,6 +12,16 @@ const configuredUrl = normalizeApiUrl(
 const requestTimeoutMs = 7000;
 const accessRefreshSkewSeconds = 120;
 let refreshInFlight: Promise<boolean> | null = null;
+
+function deviceLabel() {
+  return [
+    Device.deviceName,
+    Device.manufacturer,
+    Device.modelName,
+    Platform.OS,
+    Platform.Version
+  ].filter(Boolean).join(' / ');
+}
 
 function normalizeApiUrl(url?: string) {
   const trimmed = url?.trim();
@@ -146,6 +158,7 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
 
   const headers = new Headers(init.headers);
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  headers.set('X-Zevryl-Device', deviceLabel() || 'Mobile app');
   const accessToken = await validAccessToken();
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
   const controller = new AbortController();
@@ -177,6 +190,7 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
 async function requestText(path: string, init: RequestInit = {}, retry = true): Promise<string> {
   if (!configuredUrl) throw new ApiError(0, 'Backend API URL is not configured for this build.');
   const headers = new Headers(init.headers);
+  headers.set('X-Zevryl-Device', deviceLabel() || 'Mobile app');
   const accessToken = await validAccessToken();
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
   const response = await fetch(`${configuredUrl}${path}`, { ...init, headers });
@@ -211,8 +225,10 @@ export const api = {
   verify2fa: (code: string) => request<User>('/me/2fa/verify', { method: 'POST', body: JSON.stringify({ code }) }),
   disable2fa: (code: string) => request<User>('/me/2fa/disable', { method: 'POST', body: JSON.stringify({ code }) }),
   logout: () => request('/auth/logout', { method: 'POST' }),
+  logoutAll: () => request('/auth/logout-all', { method: 'POST' }),
   forgotPassword: (email: string) => request('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
   resetPassword: (token: string, password: string) => request('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, password }) }),
+  sessions: () => request<DeviceSession[]>('/me/sessions'),
   friends: () => request<FriendState>('/friends'),
   requestFriend: (username: string) => request('/friends/request', { method: 'POST', body: JSON.stringify({ username }) }),
   acceptFriend: (id: string) => request(`/friends/requests/${id}/accept`, { method: 'POST' }),
@@ -221,6 +237,7 @@ export const api = {
   removeFriend: (id: string) => request(`/friends/${id}`, { method: 'DELETE' }),
   friendAction: (id: string, action: 'mute' | 'unmute' | 'block', payload: { hours?: number } = {}) =>
     request(`/friends/${id}/${action}`, { method: 'POST', body: JSON.stringify(payload) }),
+  unblockFriend: (id: string) => request(`/friends/${id}/unblock`, { method: 'POST' }),
   groups: () => request<Group[]>('/groups'),
   createGroup: (payload: { name: string; description: string; friendIds: string[]; visibility?: 'private' | 'public'; voiceLimit?: number; videoLimit?: number }) =>
     request<Group>('/groups', { method: 'POST', body: JSON.stringify(payload) }),
@@ -244,6 +261,7 @@ export const api = {
     request<Message>('/messages', { method: 'POST', body: JSON.stringify(payload) }),
   sendTyping: (conversationId: string) => request('/typing/' + conversationId, { method: 'POST' }),
   typingUsers: (conversationId: string) => request<Array<{ id: string; displayName: string }>>('/typing/' + conversationId),
+  searchGifs: (q: string, limit = 40) => request<GifResult[]>(`/gifs/search?q=${encodeURIComponent(q)}&limit=${limit}`),
   editMessage: (id: string, body: string) => request<Message>(`/messages/${id}`, { method: 'PATCH', body: JSON.stringify({ body }) }),
   pinMessage: (id: string) => request<Message>(`/messages/${id}/pin`, { method: 'POST' }),
   deleteMessage: (id: string) => request(`/messages/${id}`, { method: 'DELETE' }),
