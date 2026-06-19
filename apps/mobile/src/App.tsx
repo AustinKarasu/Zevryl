@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import Constants from 'expo-constants';
+import { AudioSession, isTrackReference, LiveKitRoom, registerGlobals, useTracks, VideoTrack } from '@livekit/react-native';
 import * as Device from 'expo-device';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
@@ -30,6 +31,7 @@ import {
   View
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Track } from 'livekit-client';
 import { api, clearTokens, setTokens } from './api';
 import type {
   Announcement,
@@ -65,6 +67,12 @@ Notifications.setNotificationHandler({
     shouldShowList: true
   })
 });
+
+try {
+  registerGlobals();
+} catch {
+  // LiveKit globals can already be registered during fast refresh.
+}
 
 type Loadable<T> = { loading: boolean; data: T; error?: string };
 type NoticeTone = 'error' | 'success' | 'info';
@@ -976,6 +984,10 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
   async function joinActiveCall() {
     Vibration.cancel();
     if (callVibrationTimer.current) clearTimeout(callVibrationTimer.current);
+    const call = activeCall;
+    if (call?.url && call.token) {
+      await AudioSession.startAudioSession().catch(error => notify('error', error instanceof Error ? error.message : 'Could not start call audio.'));
+    }
     setActiveCall(call => {
       if (!call) return call;
       const next = { ...call, joined: true };
@@ -988,6 +1000,7 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
     Vibration.cancel();
     if (callVibrationTimer.current) clearTimeout(callVibrationTimer.current);
     if (callNotificationId) await Notifications.dismissNotificationAsync(callNotificationId).catch(() => undefined);
+    await AudioSession.stopAudioSession().catch(() => undefined);
     setCallNotificationId(null);
     setActiveCall(null);
   }
@@ -2234,6 +2247,7 @@ function CallSheet({
             <Text style={styles.muted}>{connectedCount} connected - {possibleMembers} member{possibleMembers === 1 ? '' : 's'} can join</Text>
             {call.joined ? <Text style={styles.meta}>{call.muted ? 'Muted' : 'Mic on'} - {call.deafened ? 'Deafened' : 'Audio on'}</Text> : null}
           </View>
+          {call.joined && call.url && call.token ? <CallMediaRoom call={call} onLeave={onLeave} /> : null}
           <View style={styles.memberListCompact}>
             {conversation.participants.map(member => (
               <View key={member.id} style={styles.memberPick}>
@@ -2270,6 +2284,43 @@ function CallSheet({
         </View>
       </View>
     </Modal>
+  );
+}
+
+function CallMediaRoom({ call, onLeave }: { call: CallState; onLeave: () => void }) {
+  return (
+    <LiveKitRoom
+      serverUrl={call.url}
+      token={call.token}
+      connect={call.joined}
+      audio={!call.muted}
+      video={call.kind === 'video'}
+      options={{ adaptiveStream: { pixelDensity: 'screen' } }}
+      onDisconnected={onLeave}
+    >
+      <LiveKitVideoGrid video={call.kind === 'video'} />
+    </LiveKitRoom>
+  );
+}
+
+function LiveKitVideoGrid({ video }: { video: boolean }) {
+  const tracks = useTracks([Track.Source.Camera]);
+  if (!video) {
+    return (
+      <View style={styles.audioOnlyPanel}>
+        <Ionicons name="volume-high" size={22} color="#E6C07A" />
+        <Text style={styles.body}>Voice channel connected</Text>
+      </View>
+    );
+  }
+  return (
+    <View style={styles.liveKitGrid}>
+      {tracks.length === 0 ? <Text style={styles.muted}>Waiting for video...</Text> : tracks.map((track, index) => (
+        isTrackReference(track)
+          ? <VideoTrack key={track.publication.trackSid || `${track.participant.identity}-${index}`} trackRef={track} style={styles.liveKitVideoTile} />
+          : <View key={`placeholder-${index}`} style={styles.liveKitVideoTile}><Text style={styles.muted}>Camera off</Text></View>
+      ))}
+    </View>
   );
 }
 
@@ -2709,6 +2760,9 @@ const styles = StyleSheet.create({
   callControlActive: { backgroundColor: 'rgba(230,192,122,.18)', borderColor: 'rgba(230,192,122,.42)' },
   callLeaveButton: { backgroundColor: 'rgba(210,64,72,.72)', borderColor: 'rgba(255,170,168,.45)' },
   callControlText: { color: '#F4F0E6', fontSize: 12, fontWeight: '800' },
+  audioOnlyPanel: { minHeight: 72, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(230,192,122,.22)', backgroundColor: 'rgba(230,192,122,.08)', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  liveKitGrid: { minHeight: 220, borderRadius: 12, overflow: 'hidden', backgroundColor: '#05070B', alignItems: 'stretch', justifyContent: 'center', gap: 8 },
+  liveKitVideoTile: { width: '100%', minHeight: 220, backgroundColor: '#05070B', alignItems: 'center', justifyContent: 'center' },
   
   // Profile
   profileHero: { alignItems: 'center', gap: 14, paddingTop: 8, paddingVertical: 20 },

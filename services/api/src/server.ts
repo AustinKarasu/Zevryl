@@ -1026,7 +1026,8 @@ app.post('/calls/token', async request => {
   const user = (await pool.query('select display_name from users where id=$1', [request.auth!.id])).rows[0];
   const token = new AccessToken(env.livekitApiKey, env.livekitApiSecret, {
     identity: request.auth!.id,
-    name: user?.display_name ?? 'Zevryl User'
+    name: user?.display_name ?? 'Zevryl User',
+    ttl: 60 * 60 * 2
   });
   token.addGrant({ room: body.roomName, roomJoin: true, canPublish: body.canPublish, canSubscribe: body.canSubscribe });
   await audit(request.auth!.id, 'call.token', 'room', body.roomName);
