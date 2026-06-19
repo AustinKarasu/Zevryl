@@ -323,6 +323,27 @@ async function migrate() {
       created_at timestamptz not null default now(),
       last_seen_at timestamptz not null default now()
     );
+    create table if not exists stories (
+      id uuid primary key,
+      user_id uuid not null references users(id) on delete cascade,
+      media_url text not null,
+      media_type text not null,
+      caption text not null default '',
+      mention_user_id uuid references users(id) on delete set null,
+      allow_comments boolean not null default true,
+      duration_ms int not null default 0,
+      expires_at timestamptz not null default now() + interval '24 hours',
+      created_at timestamptz not null default now()
+    );
+    create table if not exists story_comments (
+      id uuid primary key,
+      story_id uuid not null references stories(id) on delete cascade,
+      user_id uuid not null references users(id) on delete cascade,
+      body text not null,
+      created_at timestamptz not null default now()
+    );
+    alter table stories add column if not exists mention_user_id uuid references users(id) on delete set null;
+    alter table stories add column if not exists allow_comments boolean not null default true;
     create table if not exists recovery_tokens (
       id uuid primary key,
       user_id uuid not null references users(id) on delete cascade,
@@ -387,6 +408,9 @@ async function migrate() {
     create index if not exists idx_messages_pinned on messages(conversation_id, pinned) where pinned=true;
     create index if not exists idx_tickets_status_created on tickets(status, created_at desc);
     create index if not exists idx_push_tokens_user on push_tokens(user_id);
+    create index if not exists idx_stories_user_created on stories(user_id, created_at desc);
+    create index if not exists idx_stories_expires on stories(expires_at);
+    create index if not exists idx_story_comments_story on story_comments(story_id, created_at asc);
     create index if not exists idx_recovery_tokens_hash on recovery_tokens(token_hash);
     create index if not exists idx_audit_created on audit_logs(created_at desc);
   `);
@@ -572,6 +596,66 @@ async function ticketWithUpdates(row: any) {
     createdAt: row.created_at,
     updates: updates.rows.map(update => ({ by: update.by_user_id ?? 'system', note: update.note, at: update.created_at }))
   };
+}
+
+async function storyWithComments(row: any) {
+  const author = (await pool.query('select * from users where id=$1', [row.user_id])).rows[0];
+  const mention = row.mention_user_id ? (await pool.query('select * from users where id=$1', [row.mention_user_id])).rows[0] : null;
+  const comments = await pool.query(
+    `select sc.id as comment_id, sc.story_id, sc.user_id as comment_user_id, sc.body, sc.created_at as comment_created_at, u.*
+     from story_comments sc
+     join users u on u.id=sc.user_id
+     where sc.story_id=$1
+     order by sc.created_at asc
+     limit 100`,
+    [row.id]
+  );
+  return {
+    id: row.id,
+    userId: row.user_id,
+    author: toUser(author),
+    mediaUrl: row.media_url,
+    mediaType: row.media_type,
+    caption: row.caption ?? '',
+    mentionUser: mention ? toUser(mention) : undefined,
+    allowComments: row.allow_comments !== false,
+    durationMs: row.duration_ms ?? 0,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    comments: comments.rows.map(comment => ({
+      id: comment.comment_id,
+      storyId: comment.story_id,
+      userId: comment.comment_user_id,
+      author: toUser(comment),
+      body: comment.body,
+      createdAt: comment.comment_created_at
+    }))
+  };
+}
+
+async function notifyStory(storyId: string, userId: string, caption: string) {
+  const sender = (await pool.query('select display_name from users where id=$1', [userId])).rows[0];
+  const tokens = await pool.query(
+    `select distinct pt.token
+     from push_tokens pt
+     join friendships f on (f.user_a=$1 and f.user_b=pt.user_id) or (f.user_b=$1 and f.user_a=pt.user_id)
+     where pt.user_id<>$1`,
+    [userId]
+  );
+  if (!tokens.rowCount) return;
+  const messages = tokens.rows.map(row => ({
+    to: row.token,
+    sound: 'default',
+    channelId: 'messages',
+    title: `${sender?.display_name ?? 'Someone'} posted a story`,
+    body: caption.trim() ? caption.trim().slice(0, 140) : 'Tap to view the new story.',
+    data: { storyId, kind: 'story' }
+  }));
+  await fetch('https://exp.host/--/api/v2/push/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(messages)
+  }).catch(() => undefined);
 }
 
 async function notifyConversation(conversationId: string, senderId: string, body: string) {
@@ -967,6 +1051,24 @@ app.get('/friends', async request => {
   };
 });
 
+app.get('/users/search', async request => {
+  const query = z.object({ q: z.string().trim().min(1).max(80) }).parse(request.query);
+  const rows = await pool.query(
+    `select u.*,
+       exists (
+         select 1 from friendships f
+         where (f.user_a=$2 and f.user_b=u.id) or (f.user_b=$2 and f.user_a=u.id)
+       ) as is_friend
+     from users u
+     where u.id<>$2
+       and (u.username ilike '%' || $1 || '%' or u.display_name ilike '%' || $1 || '%' or (u.username || '#' || u.discriminator) ilike '%' || $1 || '%')
+     order by is_friend desc, u.display_name asc
+     limit 20`,
+    [query.q, request.auth!.id]
+  );
+  return rows.rows.map(toUser);
+});
+
 app.post('/friends/request', async request => {
   const body = z.object({ username: z.string().min(3) }).parse(request.body);
   const [rawName, discriminator] = body.username.toLowerCase().split('#');
@@ -1215,6 +1317,74 @@ app.post('/announcements/:id/read', async request => {
 app.get('/blogs', async () => {
   const rows = await pool.query(`select b.*, u.display_name from blogs b left join users u on u.id=b.author_id where b.deleted_at is null order by b.pinned desc, b.created_at desc limit 50`);
   return rows.rows.map(row => ({ id: row.id, title: row.title, body: row.body, imageUrl: row.image_url, linkUrl: row.link_url, linkLabel: row.link_label, category: row.category, authorName: row.display_name ?? 'Zevryl Staff', createdAt: row.created_at, pinned: row.pinned }));
+});
+
+app.get('/stories', async request => {
+  const rows = await pool.query(
+    `select s.*
+     from stories s
+     where s.expires_at > now()
+       and (
+         s.user_id=$1
+         or exists (
+           select 1 from friendships f
+           where (f.user_a=$1 and f.user_b=s.user_id)
+              or (f.user_b=$1 and f.user_a=s.user_id)
+         )
+       )
+     order by s.created_at desc
+     limit 100`,
+    [request.auth!.id]
+  );
+  return Promise.all(rows.rows.map(storyWithComments));
+});
+
+app.post('/stories', async request => {
+  const body = z.object({
+    mediaUrl: z.string().url(),
+    mediaType: z.enum(['image', 'video']),
+    caption: z.string().max(220).default(''),
+    mentionUserId: uuid.optional(),
+    allowComments: z.boolean().default(true),
+    durationMs: z.coerce.number().int().min(0).max(60000).default(0)
+  }).parse(request.body);
+  if (body.mediaType === 'video' && body.durationMs > 60000) throw app.httpErrors.badRequest('Stories can only use videos up to 1 minute.');
+  if (body.mentionUserId) {
+    const mentioned = (await pool.query('select id from users where id=$1 limit 1', [body.mentionUserId])).rows[0];
+    if (!mentioned) throw app.httpErrors.notFound('Mentioned user was not found.');
+  }
+  const id = crypto.randomUUID();
+  await pool.query(
+    'insert into stories (id,user_id,media_url,media_type,caption,mention_user_id,allow_comments,duration_ms) values ($1,$2,$3,$4,$5,$6,$7,$8)',
+    [id, request.auth!.id, body.mediaUrl, body.mediaType, body.caption.trim(), body.mentionUserId ?? null, body.allowComments, body.durationMs]
+  );
+  await audit(request.auth!.id, 'story.create', 'story', id);
+  await notifyStory(id, request.auth!.id, body.caption);
+  return storyWithComments((await pool.query('select * from stories where id=$1', [id])).rows[0]);
+});
+
+app.post('/stories/:id/comments', async request => {
+  const params = z.object({ id: uuid }).parse(request.params);
+  const body = z.object({ body: z.string().trim().min(1).max(500) }).parse(request.body);
+  const story = (await pool.query(
+    `select s.*
+     from stories s
+     where s.id=$1 and s.expires_at > now()
+       and (
+         s.user_id=$2
+         or exists (
+           select 1 from friendships f
+           where (f.user_a=$2 and f.user_b=s.user_id)
+              or (f.user_b=$2 and f.user_a=s.user_id)
+         )
+       )`,
+    [params.id, request.auth!.id]
+  )).rows[0];
+  if (!story) throw app.httpErrors.notFound('Story not found.');
+  if (story.allow_comments === false) throw app.httpErrors.forbidden('Comments are turned off for this story.');
+  await pool.query('insert into story_comments (id,story_id,user_id,body) values ($1,$2,$3,$4)', [crypto.randomUUID(), params.id, request.auth!.id, body.body]);
+  await audit(request.auth!.id, 'story.comment', 'story', params.id);
+  return storyWithComments(story);
 });
 
 app.get('/gifs/search', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async request => {

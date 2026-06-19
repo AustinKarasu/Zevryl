@@ -2,7 +2,7 @@ import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
-import type { AdminAnalytics, AlertFlag, Announcement, AppUpdate, AuditLog, BadgeDefinition, BlogPost, Conversation, DashboardStats, DeviceSession, FriendState, GifResult, Group, Message, Report, RoleDefinition, StaffAnalytics, Ticket, User, UserPage } from './types';
+import type { AdminAnalytics, AlertFlag, Announcement, AppUpdate, AuditLog, BadgeDefinition, BlogPost, Conversation, DashboardStats, DeviceSession, FriendState, GifResult, Group, Message, Report, RoleDefinition, StaffAnalytics, Story, Ticket, User, UserPage } from './types';
 
 const configuredUrl = normalizeApiUrl(
   process.env.EXPO_PUBLIC_API_URL ||
@@ -288,6 +288,12 @@ export const api = {
   announcements: () => request<Announcement[]>('/announcements'),
   markAnnouncementRead: (id: string) => request(`/announcements/${id}/read`, { method: 'POST' }),
   blogs: () => request<BlogPost[]>('/blogs'),
+  stories: () => request<Story[]>('/stories'),
+  createStory: (payload: { mediaUrl: string; mediaType: Story['mediaType']; caption?: string; mentionUserId?: string; allowComments?: boolean; durationMs?: number }) =>
+    request<Story>('/stories', { method: 'POST', body: JSON.stringify(payload) }),
+  commentStory: (id: string, body: string) =>
+    request<Story>(`/stories/${id}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
+  searchPeople: (q: string) => request<User[]>(`/users/search?q=${encodeURIComponent(q)}`),
   conversations: () => request<Conversation[]>('/conversations'),
   createDm: (userId: string) => request<Conversation>('/conversations/dm', { method: 'POST', body: JSON.stringify({ userId }) }),
   messages: (conversationId: string, query?: { q?: string; pinned?: boolean }) => {

@@ -181,6 +181,30 @@ export type AppUpdate = {
   required?: boolean;
 };
 
+export type StoryComment = {
+  id: string;
+  storyId: string;
+  userId: string;
+  author: User;
+  body: string;
+  createdAt: string;
+};
+
+export type Story = {
+  id: string;
+  userId: string;
+  author: User;
+  mediaUrl: string;
+  mediaType: 'image' | 'video';
+  caption: string;
+  mentionUser?: User;
+  allowComments: boolean;
+  durationMs: number;
+  createdAt: string;
+  expiresAt: string;
+  comments: StoryComment[];
+};
+
 export type DeviceSession = {
   id: string;
   deviceName?: string;

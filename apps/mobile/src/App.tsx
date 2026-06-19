@@ -54,6 +54,7 @@ import type {
   Report,
   RoleDefinition,
   StaffAnalytics,
+  Story,
   Ticket,
   User,
   UserPage
@@ -627,22 +628,86 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
 function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void; setTab: (tab: AppTab) => void }) {
   const [announcements, setAnnouncements] = useState<Loadable<Announcement[]>>({ loading: true, data: [] });
   const [blogs, setBlogs] = useState<Loadable<BlogPost[]>>({ loading: true, data: [] });
+  const [stories, setStories] = useState<Loadable<Story[]>>({ loading: true, data: [] });
   const [view, setView] = useState<'updates' | 'support'>('updates');
   const [supportMessage, setSupportMessage] = useState('');
+  const [showStoryCreate, setShowStoryCreate] = useState(false);
+  const [storyCaption, setStoryCaption] = useState('');
+  const [storyMentionSearch, setStoryMentionSearch] = useState('');
+  const [storyMentionResults, setStoryMentionResults] = useState<User[]>([]);
+  const [storyMentionUser, setStoryMentionUser] = useState<User | null>(null);
+  const [storyCommentsOff, setStoryCommentsOff] = useState(false);
+  const [selectedStory, setSelectedStory] = useState<Story | null>(null);
+  const [storyComment, setStoryComment] = useState('');
 
   const load = () => {
-    Promise.all([api.announcements(), api.blogs()])
-      .then(([a, b]) => {
+    Promise.all([api.announcements(), api.blogs(), api.stories()])
+      .then(([a, b, s]) => {
         setAnnouncements({ loading: false, data: a });
         setBlogs({ loading: false, data: b });
+        setStories({ loading: false, data: s });
       })
       .catch(error => {
         setAnnouncements({ loading: false, data: [], error: error.message });
         setBlogs({ loading: false, data: [], error: error.message });
+        setStories({ loading: false, data: [], error: error.message });
         notify('error', error.message);
       });
   };
   useEffect(() => { load(); }, []);
+
+  async function createStory() {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) return notify('error', 'Gallery permission is required.');
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.All, quality: 0.82, videoMaxDuration: 60 });
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    const mediaType = asset.type === 'video' ? 'video' : 'image';
+    const durationMs = typeof asset.duration === 'number' ? asset.duration : 0;
+    if (mediaType === 'video' && durationMs > 60000) return notify('error', 'Stories can only use videos up to 1 minute.');
+    const upload = await api.uploadFile({
+      uri: asset.uri,
+      name: asset.fileName || `story-${Date.now()}.${mediaType === 'video' ? 'mp4' : 'jpg'}`,
+      mimeType: asset.mimeType || (mediaType === 'video' ? 'video/mp4' : 'image/jpeg')
+    });
+    await api.createStory({ mediaUrl: upload.url, mediaType, caption: storyCaption, mentionUserId: storyMentionUser?.id, allowComments: !storyCommentsOff, durationMs })
+      .then(story => {
+        setStories(current => ({ loading: false, data: [story, ...current.data.filter(item => item.id !== story.id)] }));
+        setStoryCaption('');
+        setStoryMentionSearch('');
+        setStoryMentionResults([]);
+        setStoryMentionUser(null);
+        setStoryCommentsOff(false);
+        setShowStoryCreate(false);
+        notify('success', 'Story posted to friends.');
+      })
+      .catch(error => notify('error', error.message));
+  }
+
+  async function searchStoryMentions(value: string) {
+    setStoryMentionSearch(value);
+    setStoryMentionUser(null);
+    if (!value.trim()) return setStoryMentionResults([]);
+    await api.searchPeople(value.trim())
+      .then(setStoryMentionResults)
+      .catch(error => notify('error', error.message));
+  }
+
+  async function addStoryComment() {
+    if (!selectedStory || !storyComment.trim()) return;
+    await api.commentStory(selectedStory.id, storyComment)
+      .then(story => {
+        setSelectedStory(story);
+        setStories(current => ({ ...current, data: current.data.map(item => item.id === story.id ? story : item) }));
+        setStoryComment('');
+      })
+      .catch(error => notify('error', error.message));
+  }
+
+  async function shareStory(story: Story) {
+    await Clipboard.setStringAsync(story.mediaUrl);
+    notify('success', 'Story link copied.');
+  }
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
@@ -653,6 +718,35 @@ function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'erro
         </View>
         <StatusPill presence={user.presence} />
       </View>
+      <View style={styles.storiesHeader}>
+        <Text style={styles.cardTitle}>Stories</Text>
+        <SecondaryButton label="Create" icon="add-circle" onPress={() => setShowStoryCreate(true)} />
+      </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storyRail}>
+        <Pressable style={styles.storyBubbleCreate} onPress={() => setShowStoryCreate(true)}>
+          <Ionicons name="add" size={22} color="#111712" />
+        </Pressable>
+        {stories.loading ? <ActivityIndicator color="#E6C07A" /> : stories.data.map(story => (
+          <Pressable key={story.id} style={styles.storyBubble} onPress={() => setSelectedStory(story)}>
+            <UserAvatar user={story.author} size={54} />
+            <Text style={styles.storyBubbleText} numberOfLines={1}>{story.author.displayName}</Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+      {stories.data.length ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storyFeed}>
+          {stories.data.slice(0, 8).map(story => (
+            <Pressable key={`feed-${story.id}`} style={styles.storyFeedCard} onPress={() => setSelectedStory(story)}>
+              {story.mediaType === 'image' ? <Image source={{ uri: story.mediaUrl }} style={styles.storyFeedImage} resizeMode="cover" /> : <View style={styles.storyVideoPreview}><Ionicons name="play-circle" size={34} color="#E6C07A" /></View>}
+              <View style={styles.storyFeedOverlay}>
+                <Text style={styles.storyFeedAuthor} numberOfLines={1}>{story.author.displayName}</Text>
+                {story.mentionUser ? <Text style={styles.storyFeedMention} numberOfLines={1}>@{story.mentionUser.tag || story.mentionUser.username}</Text> : null}
+                <Text style={styles.storyFeedCaption} numberOfLines={2}>{story.caption || 'View story'}</Text>
+              </View>
+            </Pressable>
+          ))}
+        </ScrollView>
+      ) : null}
       <View style={styles.segment}>
         <Pressable style={[styles.segmentItem, view === 'updates' && styles.segmentActive]} onPress={() => setView('updates')}><Text style={styles.segmentText}>{t(user.language, 'updates')}</Text></Pressable>
         <Pressable style={[styles.segmentItem, view === 'support' && styles.segmentActive]} onPress={() => setView('support')}><Text style={styles.segmentText}>{t(user.language, 'support')}</Text></Pressable>
@@ -700,6 +794,49 @@ function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'erro
           ))}
         </>
       )}
+      <Modal visible={showStoryCreate} transparent animationType="fade">
+        <View style={styles.modalBackdrop}>
+          <View style={styles.announcementModal}>
+            <View style={styles.editorHeader}><Text style={[styles.cardTitle, { flex: 1 }]}>Create Story</Text><IconButton icon="close" onPress={() => setShowStoryCreate(false)} /></View>
+            <Field icon="text" placeholder="Add text" value={storyCaption} onChangeText={setStoryCaption} multiline />
+            <Field icon="at" placeholder="Mention username or tag" value={storyMentionUser ? (storyMentionUser.tag || storyMentionUser.username) : storyMentionSearch} onChangeText={searchStoryMentions} autoCapitalize="none" />
+            {storyMentionResults.length ? <ScrollView style={styles.storyMentionList}>{storyMentionResults.map(item => <Pressable key={item.id} style={styles.memberPick} onPress={() => { setStoryMentionUser(item); setStoryMentionResults([]); setStoryMentionSearch(item.tag || item.username); }}><View style={styles.flex}><Text style={styles.body}>{item.displayName}</Text><Text style={styles.meta}>@{item.tag || item.username}</Text></View><Ionicons name="at" size={18} color="#E6C07A" /></Pressable>)}</ScrollView> : null}
+            <Pressable style={styles.storyToggleRow} onPress={() => setStoryCommentsOff(value => !value)}>
+              <View style={styles.flex}>
+                <Text style={styles.body}>Turn off commenting</Text>
+                <Text style={styles.meta}>Off by default. Friends can comment unless enabled.</Text>
+              </View>
+              <View style={[styles.inlineSwitch, storyCommentsOff && styles.inlineSwitchOn]}><View style={[styles.inlineSwitchKnob, storyCommentsOff && styles.inlineSwitchKnobOn]} /></View>
+            </Pressable>
+            <Text style={styles.muted}>Videos must be 1 minute or shorter. Friends will be notified when you post.</Text>
+            <View style={styles.ticketActions}>
+              <SecondaryButton label="Cancel" icon="close" onPress={() => setShowStoryCreate(false)} />
+              <PrimaryButton label="Upload" icon="cloud-upload" onPress={createStory} />
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal visible={Boolean(selectedStory)} transparent animationType="slide">
+        <View style={styles.sheetBackdrop}>
+          <View style={styles.storySheet}>
+            {selectedStory ? (
+              <ScrollView contentContainerStyle={styles.storySheetContent} keyboardShouldPersistTaps="handled">
+                <View style={styles.editorHeader}><Text style={[styles.cardTitle, { flex: 1 }]}>{selectedStory.author.displayName}</Text><IconButton icon="close" onPress={() => setSelectedStory(null)} /></View>
+                {selectedStory.mediaType === 'image' ? <Image source={{ uri: selectedStory.mediaUrl }} style={styles.storyLargeMedia} resizeMode="cover" /> : <Pressable style={styles.storyLargeVideo} onPress={() => openLink(selectedStory.mediaUrl)}><Ionicons name="play-circle" size={44} color="#E6C07A" /><Text style={styles.body}>Open video story</Text></Pressable>}
+                {selectedStory.caption ? <Text style={styles.body}>{selectedStory.caption}</Text> : null}
+                {selectedStory.mentionUser ? <Text style={styles.link}>Mentioned @{selectedStory.mentionUser.tag || selectedStory.mentionUser.username}</Text> : null}
+                <View style={styles.ticketActions}><SecondaryButton label="Share" icon="share-social" onPress={() => shareStory(selectedStory)} /></View>
+                <Text style={styles.cardTitle}>Comments</Text>
+                {selectedStory.allowComments === false ? <Text style={styles.muted}>Comments are turned off.</Text> : selectedStory.comments.length === 0 ? <Text style={styles.muted}>No comments yet.</Text> : selectedStory.comments.map(comment => <View key={comment.id} style={styles.storyComment}><Text style={styles.body}>{comment.author.displayName}</Text><Text style={styles.muted}>{comment.body}</Text></View>)}
+                {selectedStory.allowComments !== false ? <View style={styles.storyCommentComposer}>
+                  <TextInput style={styles.searchInput} placeholder="Add a comment" placeholderTextColor="#899486" value={storyComment} onChangeText={setStoryComment} />
+                  <IconButton icon="send" onPress={addStoryComment} />
+                </View> : null}
+              </ScrollView>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -904,6 +1041,7 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
   const [body, setBody] = useState('');
   const [showEmoji, setShowEmoji] = useState(false);
   const [showGif, setShowGif] = useState(false);
+  const [showUploadSheet, setShowUploadSheet] = useState(false);
   const [emojiSearch, setEmojiSearch] = useState('');
   const [gifSearch, setGifSearch] = useState('');
   const [gifResults, setGifResults] = useState<GifResult[]>([]);
@@ -1055,6 +1193,7 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
     if (!selected) return notify('error', 'Open a DM first.');
     setShowEmoji(false);
     setShowGif(false);
+    setShowUploadSheet(false);
     const permission = camera ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) return notify('error', camera ? 'Camera permission is required.' : 'Gallery permission is required.');
     const result = camera
@@ -1074,6 +1213,7 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
     if (!selected) return notify('error', 'Open a DM first.');
     setShowEmoji(false);
     setShowGif(false);
+    setShowUploadSheet(false);
     const result = await DocumentPicker.getDocumentAsync({
       multiple: false,
       copyToCacheDirectory: true
@@ -1289,13 +1429,26 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
           {typingText ? <Text style={styles.typingText}>{typingText}</Text> : null}
           {showEmoji && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search emoji or use your keyboard for all emoji" placeholderTextColor="#899486" value={emojiSearch} onChangeText={setEmojiSearch} /> <View style={styles.pickerRow}>{emojiChoices.map(item => <Pressable key={item} style={styles.pickerButton} onPress={() => setBody(prev => `${prev}${item}`)}><Text style={styles.emojiText}>{item}</Text></Pressable>)}</View></View>}
           {showGif && <View style={styles.pickerPanel}><TextInput style={styles.searchInput} placeholder="Search GIFs" placeholderTextColor="#899486" value={gifSearch} onChangeText={setGifSearch} /><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.gifPicker}>{gifLoading ? <ActivityIndicator color="#E6C07A" /> : gifResults.length ? gifResults.map(item => <Pressable key={item.id} onPress={() => send({ type: 'gif', attachmentUrl: item.url, body: item.title || 'GIF' })}><Image source={{ uri: item.previewUrl || item.url }} style={styles.gifThumb} /></Pressable>) : <Text style={styles.muted}>No GIF found. Try another search.</Text>}</ScrollView></View>}
-          <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom + 6, 10) }]}>
+          <View style={[styles.composer, { marginBottom: Math.max(insets.bottom, 6) }]}>
             <IconButton icon="happy" onPress={() => openTray('emoji')} />
             <IconButton icon="film" onPress={() => openTray('gif')} />
-            <IconButton icon="attach" onPress={() => Alert.alert('Upload', 'Choose a source', [{ text: 'Document', onPress: pickChatDocument }, { text: 'Photo Library', onPress: () => pickChatImage(false) }, { text: 'Camera', onPress: () => pickChatImage(true) }, { text: 'Cancel', style: 'cancel' }])} />
+            <IconButton icon="attach" onPress={() => setShowUploadSheet(true)} />
             <TextInput style={styles.composerInput} placeholder="Message" placeholderTextColor="#899486" value={body} onChangeText={updateBody} multiline />
             <IconButton icon="send" onPress={() => send()} />
           </View>
+          <Modal visible={showUploadSheet} transparent animationType="fade">
+            <View style={styles.modalBackdrop}>
+              <View style={styles.uploadSheet}>
+                <View style={styles.editorHeader}><Text style={[styles.cardTitle, { flex: 1 }]}>Upload</Text><IconButton icon="close" onPress={() => setShowUploadSheet(false)} /></View>
+                <View style={styles.uploadGrid}>
+                  <SecondaryButton label="Document" icon="document-attach" onPress={pickChatDocument} />
+                  <SecondaryButton label="Photo Library" icon="images" onPress={() => pickChatImage(false)} />
+                  <SecondaryButton label="Camera" icon="camera" onPress={() => pickChatImage(true)} />
+                  <SecondaryButton label="Cancel" icon="close" onPress={() => setShowUploadSheet(false)} />
+                </View>
+              </View>
+            </View>
+          </Modal>
           <ProfileSheet user={profileUser} currentUser={user} reportReason={reportReason} reportProof={reportProof} setReportReason={setReportReason} setReportProof={setReportProof} onClose={() => setProfileUser(null)} canUnfriend={selected.kind === 'dm'} onMute={dmAction} onReport={submitReport} />
           <Modal visible={Boolean(editingMessage)} transparent animationType="fade">
             <View style={styles.modalBackdrop}>
@@ -3093,6 +3246,27 @@ const styles = StyleSheet.create({
   postCard: { gap: 10 },
   postImage: { width: '100%', height: 150, borderRadius: 10, backgroundColor: '#111712', marginTop: 8 },
   postTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  storiesHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 },
+  storyRail: { gap: 12, paddingVertical: 10, alignItems: 'center' },
+  storyBubble: { width: 68, alignItems: 'center', gap: 6 },
+  storyBubbleCreate: { width: 54, height: 54, borderRadius: 18, backgroundColor: '#E6C07A', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'rgba(255,255,255,.18)' },
+  storyBubbleText: { color: '#D9E2CC', fontSize: 10, fontWeight: '800', maxWidth: 66 },
+  storyFeed: { gap: 12, paddingBottom: 8 },
+  storyFeedCard: { width: 154, height: 214, borderRadius: 12, overflow: 'hidden', backgroundColor: '#111712', borderWidth: 1, borderColor: 'rgba(230,192,122,.22)' },
+  storyFeedImage: { width: '100%', height: '100%' },
+  storyVideoPreview: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#111712' },
+  storyFeedOverlay: { position: 'absolute', left: 0, right: 0, bottom: 0, padding: 10, backgroundColor: 'rgba(0,0,0,.48)' },
+  storyFeedAuthor: { color: '#F4F0E6', fontSize: 12, fontWeight: '900' },
+  storyFeedMention: { color: '#E6C07A', fontSize: 11, fontWeight: '800', marginTop: 2 },
+  storyFeedCaption: { color: '#D9E2CC', fontSize: 11, lineHeight: 15, marginTop: 2 },
+  storySheet: { maxHeight: '88%', borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', backgroundColor: '#182019', overflow: 'hidden' },
+  storySheetContent: { padding: 16, paddingBottom: 40, gap: 12 },
+  storyLargeMedia: { width: '100%', aspectRatio: 9 / 14, borderRadius: 12, backgroundColor: '#111712' },
+  storyLargeVideo: { width: '100%', aspectRatio: 9 / 14, borderRadius: 12, backgroundColor: '#111712', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  storyComment: { borderTopWidth: 1, borderTopColor: 'rgba(218,226,202,.08)', paddingTop: 10, gap: 4 },
+  storyCommentComposer: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
+  storyMentionList: { maxHeight: 170, marginTop: 6 },
+  storyToggleRow: { minHeight: 58, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(218,226,202,.14)', backgroundColor: 'rgba(255,255,255,.04)', paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10 },
   announcementCard: { flexDirection: 'row', gap: 14, alignItems: 'flex-start', borderColor: 'rgba(230,192,122,.2)', borderWidth: 1.5 },
   announcementIcon: { width: 42, height: 42, borderRadius: 8, backgroundColor: 'rgba(230,192,122,.14)', alignItems: 'center', justifyContent: 'center' },
   manageRow: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 12, borderTopWidth: 1, borderTopColor: 'rgba(218,226,202,.09)', paddingTop: 12, marginTop: 12 },
@@ -3233,8 +3407,10 @@ const styles = StyleSheet.create({
   
   chatCard: { gap: 12 },
   composerContainer: { flexDirection: 'row', alignItems: 'flex-end', gap: 12, padding: 14, borderTopWidth: 1, borderColor: 'rgba(255,255,255,.08)', backgroundColor: 'rgba(5,7,11,.92)' },
-  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 7, paddingTop: 6, paddingHorizontal: 2, backgroundColor: 'rgba(17,23,18,.94)', borderTopWidth: 1, borderColor: 'rgba(218,226,202,.08)' },
+  composer: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 8, paddingHorizontal: 6, backgroundColor: 'rgba(17,23,18,.86)', borderTopWidth: 1, borderColor: 'rgba(218,226,202,.08)' },
   composerInput: { flex: 1, minHeight: 44, maxHeight: 104, color: '#F4F0E6', borderRadius: 10, backgroundColor: '#151D16', paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, borderWidth: 1, borderColor: 'rgba(218,226,202,.12)' },
+  uploadSheet: { width: '100%', borderRadius: 12, backgroundColor: '#182019', borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', padding: 16, gap: 10 },
+  uploadGrid: { gap: 8 },
   fileAttachment: { minHeight: 42, maxWidth: 220, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(230,192,122,.24)', backgroundColor: 'rgba(230,192,122,.08)', paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
   fileAttachmentText: { color: '#EDE4C8', fontSize: 13, fontWeight: '800', flex: 1 },
   pinnedBar: { minHeight: 38, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', backgroundColor: 'rgba(230,192,122,.10)', paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
