@@ -9,8 +9,8 @@ const configuredUrl = normalizeApiUrl(
     (Constants.expoConfig?.extra?.apiUrl as string | undefined) ||
     ''
 );
-const requestTimeoutMs = 7000;
-const accessRefreshSkewSeconds = 120;
+const requestTimeoutMs = 15000;
+const accessRefreshSkewSeconds = 300;
 let refreshInFlight: Promise<boolean> | null = null;
 
 function deviceLabel() {
@@ -148,6 +148,10 @@ async function validAccessToken() {
   const exp = decodeJwtExp(accessToken);
   const expiresSoon = exp !== null && exp <= Math.floor(Date.now() / 1000) + accessRefreshSkewSeconds;
   if (expiresSoon && await refreshSession()) return token();
+  if (exp !== null && exp <= Math.floor(Date.now() / 1000)) {
+    await clearTokens();
+    return null;
+  }
   return accessToken;
 }
 
@@ -171,7 +175,7 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
     throw new ApiError(
       0,
       timedOut
-        ? `Zevryl backend did not respond at ${configuredUrl}.`
+        ? `Zevryl API is taking too long to respond at ${configuredUrl}. Please try again.`
         : `Cannot reach Zevryl backend at ${configuredUrl}. Check that the API is online and this device can access it.`
     );
   } finally {

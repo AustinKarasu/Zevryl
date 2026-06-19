@@ -11,6 +11,10 @@ import { createHash, randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { z } from 'zod';
 
+function envValue(...values: Array<string | undefined>) {
+  return values.find(value => value?.trim())?.trim() ?? '';
+}
+
 const env = {
   host: process.env.API_HOST ?? '0.0.0.0',
   port: Number(process.env.API_PORT ?? 4100),
@@ -21,9 +25,9 @@ const env = {
   adminEmail: process.env.BOOTSTRAP_ADMIN_EMAIL,
   adminPassword: process.env.BOOTSTRAP_ADMIN_PASSWORD
   ,
-  livekitUrl: process.env.LIVEKIT_URL ?? process.env.EXPO_PUBLIC_LIVEKIT_URL ?? '',
-  livekitApiKey: process.env.LIVEKIT_API_KEY ?? process.env.LK_API_KEY ?? '',
-  livekitApiSecret: process.env.LIVEKIT_API_SECRET ?? process.env.LK_API_SECRET ?? '',
+  livekitUrl: envValue(process.env.LIVEKIT_URL, process.env.EXPO_PUBLIC_LIVEKIT_URL),
+  livekitApiKey: envValue(process.env.LIVEKIT_API_KEY, process.env.LK_API_KEY),
+  livekitApiSecret: envValue(process.env.LIVEKIT_API_SECRET, process.env.LK_API_SECRET),
   publicAppUrl: process.env.PUBLIC_APP_URL ?? 'https://github.com/AustinKarasu/Zevryl/releases/latest',
   resendApiKey: process.env.RESEND_API_KEY ?? '',
   mailFrom: process.env.MAIL_FROM ?? 'Zevryl <noreply@zevryl.app>',

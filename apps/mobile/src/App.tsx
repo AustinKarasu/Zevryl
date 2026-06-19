@@ -3,6 +3,7 @@ import { BlurView } from 'expo-blur';
 import Constants from 'expo-constants';
 import { AudioSession, isTrackReference, LiveKitRoom, registerGlobals, useTracks, VideoTrack } from '@livekit/react-native';
 import * as Device from 'expo-device';
+import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import * as LocalAuthentication from 'expo-local-authentication';
@@ -62,6 +63,7 @@ const bootCacheFile = `${FileSystem.documentDirectory || ''}zevryl-boot-cache.js
 const bootCacheMaxAgeMs = 1000 * 60 * 60 * 24 * 7;
 const autoLoginKey = 'zevryl.security.autoLogin';
 const biometricLoginKey = 'zevryl.security.biometricLogin';
+const maxDocumentBytes = 500 * 1024 * 1024;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -1027,6 +1029,22 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
     await send({ type: 'image', attachmentUrl: uri, body: 'Image' });
   }
 
+  async function pickChatDocument() {
+    if (!selected) return notify('error', 'Open a DM first.');
+    setShowEmoji(false);
+    setShowGif(false);
+    const result = await DocumentPicker.getDocumentAsync({
+      multiple: false,
+      copyToCacheDirectory: true
+    });
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    if (typeof asset.size === 'number' && asset.size > maxDocumentBytes) {
+      return notify('error', 'File is too large. Maximum size is 500 MB.');
+    }
+    await send({ type: 'file', attachmentUrl: asset.uri, body: asset.name || 'Document' });
+  }
+
   async function remove(message: Message) {
     await api.deleteMessage(message.id)
       .then(() => setMessages(prev => prev.filter(item => item.id !== message.id)))
@@ -1194,6 +1212,7 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
                 <Pressable style={styles.messageAuthor} onPress={() => setProfileUser(author)} onLongPress={() => setProfileUser(author)}><UserAvatar user={author} size={28} /><Text style={styles.messageName}>{author.displayName}</Text>{topBadge ? <BadgeIcon badge={topBadge} /> : null}<Text style={styles.messageTimeInline}>{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>{message.pinned ? <Ionicons name="pin" size={11} color="#E6C07A" /> : null}{message.isEdited ? <Text style={styles.editedTag}>edited</Text> : null}</Pressable>
                 <View style={[styles.messageBubble, message.senderId === user.id && styles.messageBubbleOwn]}>
                   {(message.type === 'gif' || message.type === 'image') && message.attachmentUrl ? <Image source={{ uri: message.attachmentUrl }} style={styles.chatImage} resizeMode="cover" /> : null}
+                  {message.type === 'file' && message.attachmentUrl ? <Pressable style={styles.fileAttachment} onPress={() => Linking.openURL(message.attachmentUrl!).catch(() => notify('error', 'Could not open file.'))}><Ionicons name="document-attach" size={18} color="#E6C07A" /><Text style={styles.fileAttachmentText} numberOfLines={1}>{message.body || 'Document'}</Text></Pressable> : null}
                   {message.body ? <RichText text={message.body} /> : null}
                 </View>
                 <View style={styles.messageActions}><Pressable onPress={() => copyMessage(message)}><Ionicons name="copy" size={14} color="#AEB8A5" /></Pressable>{message.senderId === user.id && <Pressable onPress={() => editMessage(message)}><Ionicons name="pencil" size={14} color="#AEB8A5" /></Pressable>}</View>
@@ -1206,7 +1225,7 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
           <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom + 6, 10) }]}>
             <IconButton icon="happy" onPress={() => openTray('emoji')} />
             <IconButton icon="film" onPress={() => openTray('gif')} />
-            <IconButton icon="attach" onPress={() => Alert.alert('Upload', 'Choose media source', [{ text: 'Photo Library', onPress: () => pickChatImage(false) }, { text: 'Camera', onPress: () => pickChatImage(true) }, { text: 'Cancel', style: 'cancel' }])} />
+            <IconButton icon="attach" onPress={() => Alert.alert('Upload', 'Choose a source', [{ text: 'Document', onPress: pickChatDocument }, { text: 'Photo Library', onPress: () => pickChatImage(false) }, { text: 'Camera', onPress: () => pickChatImage(true) }, { text: 'Cancel', style: 'cancel' }])} />
             <TextInput style={styles.composerInput} placeholder="Message" placeholderTextColor="#899486" value={body} onChangeText={updateBody} multiline />
             <IconButton icon="send" onPress={() => send()} />
           </View>
@@ -3029,7 +3048,7 @@ const styles = StyleSheet.create({
   logIcon: { width: 38, height: 38, borderRadius: 10, backgroundColor: 'rgba(230,192,122,.12)', alignItems: 'center', justifyContent: 'center' },
   
   // Icon Button
-  iconButton: { width: 44, height: 44, borderRadius: 10, backgroundColor: 'rgba(255,255,255,.06)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,.08)' },
+  iconButton: { width: 40, height: 40, borderRadius: 9, backgroundColor: 'rgba(255,255,255,.06)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,.08)' },
   iconButtonPressed: { backgroundColor: 'rgba(255,255,255,.12)' },
   iconContainer: { width: 42, height: 42, borderRadius: 10, backgroundColor: 'rgba(230,192,122,.12)', alignItems: 'center', justifyContent: 'center' },
   
@@ -3093,7 +3112,7 @@ const styles = StyleSheet.create({
   gifImage: { width: 190, height: 130, borderRadius: 10, backgroundColor: '#111712' },
   chatImage: { width: 214, height: 150, borderRadius: 10, backgroundColor: '#111712' },
   pickerRow: { flexDirection: 'row', gap: 6, paddingVertical: 8, flexWrap: 'wrap' },
-  pickerPanel: { gap: 8, paddingVertical: 8, borderTopWidth: 1, borderColor: 'rgba(218,226,202,.08)', backgroundColor: 'rgba(17,23,18,.98)' },
+  pickerPanel: { gap: 8, paddingVertical: 7, borderTopWidth: 1, borderColor: 'rgba(218,226,202,.08)', backgroundColor: 'rgba(17,23,18,.96)' },
   pickerButton: { width: 40, height: 40, borderRadius: 10, backgroundColor: '#202A21', alignItems: 'center', justifyContent: 'center' },
   emojiText: { fontSize: 22 },
   gifPicker: { flexDirection: 'row', gap: 8, paddingVertical: 10 },
@@ -3101,8 +3120,10 @@ const styles = StyleSheet.create({
   
   chatCard: { gap: 12 },
   composerContainer: { flexDirection: 'row', alignItems: 'flex-end', gap: 12, padding: 14, borderTopWidth: 1, borderColor: 'rgba(255,255,255,.08)', backgroundColor: 'rgba(5,7,11,.92)' },
-  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingTop: 8, paddingHorizontal: 2, backgroundColor: 'rgba(17,23,18,.98)', borderTopWidth: 1, borderColor: 'rgba(218,226,202,.08)' },
-  composerInput: { flex: 1, minHeight: 58, maxHeight: 132, color: '#F4F0E6', borderRadius: 12, backgroundColor: '#151D16', paddingHorizontal: 14, paddingVertical: 14, fontSize: 15, borderWidth: 1, borderColor: 'rgba(218,226,202,.12)' },
+  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 7, paddingTop: 6, paddingHorizontal: 2, backgroundColor: 'rgba(17,23,18,.94)', borderTopWidth: 1, borderColor: 'rgba(218,226,202,.08)' },
+  composerInput: { flex: 1, minHeight: 44, maxHeight: 104, color: '#F4F0E6', borderRadius: 10, backgroundColor: '#151D16', paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, borderWidth: 1, borderColor: 'rgba(218,226,202,.12)' },
+  fileAttachment: { minHeight: 42, maxWidth: 220, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(230,192,122,.24)', backgroundColor: 'rgba(230,192,122,.08)', paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
+  fileAttachmentText: { color: '#EDE4C8', fontSize: 13, fontWeight: '800', flex: 1 },
   pinnedBar: { minHeight: 38, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', backgroundColor: 'rgba(230,192,122,.10)', paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   pinnedText: { color: '#EDE4C8', fontWeight: '800', flex: 1, fontSize: 12 },
   callActions: { flexDirection: 'row', gap: 10 },
