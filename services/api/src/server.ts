@@ -56,6 +56,28 @@ const accessKey = new TextEncoder().encode(env.accessSecret);
 const refreshKey = new TextEncoder().encode(env.refreshSecret);
 const authClockToleranceSeconds = 10 * 60;
 const maxUploadBytes = 500 * 1024 * 1024;
+const alertKeywords = [
+  'bomb',
+  'explosive',
+  'terrorist',
+  'terrorism',
+  'hijack',
+  'hijacking',
+  'assassinate',
+  'assassinating',
+  'assassination',
+  'kidnap',
+  'hostage',
+  'massacre',
+  'shooting',
+  'gun',
+  'weapon',
+  'threat',
+  'kill',
+  'murder',
+  'attack',
+  'blast'
+];
 
 type Auth = { id: string; role: 'user' | 'staff' | 'admin' };
 
@@ -602,6 +624,19 @@ async function notifyCall(roomName: string, senderId: string, kind: 'voice' | 'v
   }).catch(() => undefined);
 }
 
+function alertMatches(...values: Array<unknown>) {
+  const text = values
+    .map(value => typeof value === 'string' ? value : JSON.stringify(value ?? ''))
+    .join(' ')
+    .toLowerCase();
+  return alertKeywords.filter(keyword => new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text));
+}
+
+function redactAlertText(value: unknown) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+  return text.replace(/\s+/g, ' ').trim().slice(0, 220);
+}
+
 const fallbackGifs = [
   { id: 'fallback-wave', url: 'https://media.giphy.com/media/111ebonMs90YLu/giphy.gif', previewUrl: 'https://media.giphy.com/media/111ebonMs90YLu/giphy.gif', title: 'Wave', source: 'fallback' },
   { id: 'fallback-wow', url: 'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif', previewUrl: 'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif', title: 'Wow', source: 'fallback' },
@@ -673,7 +708,7 @@ const recoveryRateLimit = { max: 3, timeWindow: '15 minutes' };
 
 app.addHook('preHandler', async request => {
   const url = request.routeOptions.url ?? '';
-  if (url.startsWith('/auth/') || url.startsWith('/uploads/') || url === '/health' || url === '/app/latest') return;
+  if (url.startsWith('/auth/') || (request.method === 'GET' && url.startsWith('/uploads/')) || url === '/health' || url === '/app/latest') return;
   await requireAuth(request);
   await pool.query(
     'update sessions set last_seen_at=now() where user_id=$1 and ip_address=$2 and user_agent is not distinct from $3 and revoked_at is null',
@@ -1154,6 +1189,8 @@ app.post('/conversations/:id/unfriend', async request => {
 
 app.get('/conversations/:id/download', async request => {
   const params = z.object({ id: uuid }).parse(request.params);
+  const member = (await pool.query('select 1 from conversation_members where conversation_id=$1 and user_id=$2 limit 1', [params.id, request.auth!.id])).rows[0];
+  if (!member) throw app.httpErrors.forbidden('You cannot download this conversation.');
   const rows = await pool.query('select m.*, u.username from messages m left join users u on u.id=m.sender_id where m.conversation_id=$1 order by m.created_at asc', [params.id]);
   return rows.rows.map(row => `${row.created_at},${row.username ?? 'deleted'},${JSON.stringify(row.body)}`).join('\n');
 });
@@ -1189,6 +1226,8 @@ app.get('/gifs/search', { config: { rateLimit: { max: 30, timeWindow: '1 minute'
 app.get('/messages/:conversationId', async request => {
   const params = z.object({ conversationId: uuid }).parse(request.params);
   const query = z.object({ q: z.string().optional(), pinned: z.string().optional() }).parse(request.query);
+  const member = (await pool.query('select 1 from conversation_members where conversation_id=$1 and user_id=$2 limit 1', [params.conversationId, request.auth!.id])).rows[0];
+  if (!member) throw app.httpErrors.forbidden('You cannot view this conversation.');
   const rows = await pool.query(
     `select m.*, u.display_name as sender_name, b.blocked_id is not null as blocked_by_viewer
      from messages m
@@ -1197,7 +1236,7 @@ app.get('/messages/:conversationId', async request => {
      where m.conversation_id=$1 and m.deleted_at is null
        and ($2::text is null or m.body ilike '%' || $2 || '%')
        and ($3::boolean is false or m.pinned=true)
-     order by m.created_at asc limit 100`,
+     order by m.created_at asc limit 1000`,
     [params.conversationId, query.q ?? null, query.pinned === '1', request.auth!.id]
   );
   return rows.rows.map(row => {
@@ -1413,8 +1452,88 @@ app.get('/admin/stats', async request => {
 
 app.get('/admin/users', async request => {
   requireRole(request, ['admin']);
-  const rows = await pool.query('select * from users order by created_at desc limit 500');
-  return rows.rows.map(toUser);
+  const query = z.object({
+    q: z.string().trim().optional(),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(10).default(10)
+  }).parse(request.query);
+  const where = query.q
+    ? `where username ilike '%' || $1 || '%' or display_name ilike '%' || $1 || '%' or email ilike '%' || $1 || '%' or discriminator ilike '%' || $1 || '%'`
+    : '';
+  const values: Array<string | number> = query.q ? [query.q] : [];
+  const count = Number((await pool.query(`select count(*) from users ${where}`, values)).rows[0].count);
+  const offset = (query.page - 1) * query.limit;
+  const rows = await pool.query(
+    `select * from users ${where} order by created_at desc limit $${values.length + 1} offset $${values.length + 2}`,
+    [...values, query.limit, offset]
+  );
+  return {
+    items: rows.rows.map(toUser),
+    total: count,
+    page: query.page,
+    pageSize: query.limit,
+    totalPages: Math.max(1, Math.ceil(count / query.limit))
+  };
+});
+
+app.get('/admin/alerts', async request => {
+  requireRole(request, ['admin']);
+  const query = z.object({ q: z.string().trim().optional() }).parse(request.query);
+  const [messages, tickets, uploads] = await Promise.all([
+    pool.query(
+      `select m.id, m.body, m.attachment_url, m.created_at, u.username, u.display_name
+       from messages m
+       left join users u on u.id=m.sender_id
+       where m.deleted_at is null
+       order by m.created_at desc limit 300`
+    ),
+    pool.query(
+      `select t.id, t.subject, t.body, t.proof_url, t.created_at, u.username, u.display_name
+       from tickets t
+       left join users u on u.id=t.user_id
+       order by t.created_at desc limit 200`
+    ),
+    pool.query(
+      `select id, target_id, metadata, created_at
+       from audit_logs
+       where action='upload.create'
+       order by created_at desc limit 300`
+    )
+  ]);
+  const alerts = [
+    ...messages.rows.map(row => ({
+      id: `message-${row.id}`,
+      source: 'message',
+      label: 'Message content',
+      matches: alertMatches(row.body, row.attachment_url),
+      preview: redactAlertText(row.body || row.attachment_url),
+      actor: row.display_name || row.username || 'Unknown user',
+      createdAt: row.created_at
+    })),
+    ...tickets.rows.map(row => ({
+      id: `ticket-${row.id}`,
+      source: 'ticket',
+      label: 'Ticket/report content',
+      matches: alertMatches(row.subject, row.body, row.proof_url),
+      preview: redactAlertText(`${row.subject} ${row.body} ${row.proof_url ?? ''}`),
+      actor: row.display_name || row.username || 'Unknown user',
+      createdAt: row.created_at
+    })),
+    ...uploads.rows.map(row => ({
+      id: `upload-${row.id}`,
+      source: 'upload',
+      label: 'File or image name',
+      matches: alertMatches(row.target_id, row.metadata),
+      preview: redactAlertText(row.metadata?.filename || row.target_id),
+      actor: 'Upload audit',
+      createdAt: row.created_at
+    }))
+  ]
+    .filter(item => item.matches.length)
+    .filter(item => !query.q || `${item.matches.join(' ')} ${item.preview} ${item.actor}`.toLowerCase().includes(query.q!.toLowerCase()))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, 100);
+  return alerts;
 });
 
 app.get('/admin/audit', async request => {

@@ -2,7 +2,7 @@ import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
-import type { AdminAnalytics, Announcement, AppUpdate, AuditLog, BadgeDefinition, BlogPost, Conversation, DashboardStats, DeviceSession, FriendState, GifResult, Group, Message, Report, RoleDefinition, StaffAnalytics, Ticket, User } from './types';
+import type { AdminAnalytics, AlertFlag, Announcement, AppUpdate, AuditLog, BadgeDefinition, BlogPost, Conversation, DashboardStats, DeviceSession, FriendState, GifResult, Group, Message, Report, RoleDefinition, StaffAnalytics, Ticket, User, UserPage } from './types';
 
 const configuredUrl = normalizeApiUrl(
   process.env.EXPO_PUBLIC_API_URL ||
@@ -343,7 +343,14 @@ export const api = {
   moderateUser: (payload: { userId: string; action: 'mute' | 'ban' | 'unban'; reason?: string; hours?: number }) =>
     request('/admin/users/moderate', { method: 'POST', body: JSON.stringify(payload) }),
   auditLogs: (type?: string) => request<AuditLog[]>(`/admin/audit${type ? `?type=${encodeURIComponent(type)}` : ''}`),
-  adminUsers: () => request<User[]>('/admin/users'),
+  adminUsers: (query: { q?: string; page?: number; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (query.q) params.set('q', query.q);
+    if (query.page) params.set('page', String(query.page));
+    params.set('limit', String(query.limit ?? 10));
+    return request<UserPage>(`/admin/users?${params}`);
+  },
+  adminAlerts: (q?: string) => request<AlertFlag[]>(`/admin/alerts${q ? `?q=${encodeURIComponent(q)}` : ''}`),
   adminAnalytics: () => request<AdminAnalytics>('/admin/analytics'),
   updateUser: (payload: { username: string; newUsername?: string; discriminator?: string; mobile?: string; alternateEmail?: string; newPassword?: string; resetUsernameLimit?: boolean }) =>
     request<User>('/admin/users/update', { method: 'POST', body: JSON.stringify(payload) }),

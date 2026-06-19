@@ -224,3 +224,21 @@ export type StaffAnalytics = {
   dailyReports: Array<{ date: string; count: number }>;
   dailyBansMutes: Array<{ date: string; count: number }>;
 };
+
+export type UserPage = {
+  items: User[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
+export type AlertFlag = {
+  id: string;
+  source: 'message' | 'ticket' | 'upload';
+  label: string;
+  matches: string[];
+  preview: string;
+  actor: string;
+  createdAt: string;
+};

@@ -18,6 +18,7 @@ import {
   ActivityIndicator,
   Alert,
   AppState,
+  BackHandler,
   Image,
   KeyboardAvoidingView,
   Linking,
@@ -37,6 +38,7 @@ import { api, clearTokens, setTokens } from './api';
 import type {
   Announcement,
   AdminAnalytics,
+  AlertFlag,
   AppTab,
   AppUpdate,
   AuditLog,
@@ -53,7 +55,8 @@ import type {
   RoleDefinition,
   StaffAnalytics,
   Ticket,
-  User
+  User,
+  UserPage
 } from './types';
 
 const logo = require('../assets/zevryl-logo.png');
@@ -104,8 +107,7 @@ const badgeIcons: Record<string, keyof typeof Ionicons.glyphMap> = {
   Staff: 'briefcase',
   Member: 'person',
   Vip: 'star',
-  Partner: 'people',
-  Demo: 'flask'
+  Partner: 'people'
 };
 const presenceMeta: Record<User['presence'], { label: string; icon: keyof typeof Ionicons.glyphMap; color: string }> = {
   online: { label: 'Online', icon: 'ellipse', color: '#4FCC7A' },
@@ -114,7 +116,7 @@ const presenceMeta: Record<User['presence'], { label: string; icon: keyof typeof
   invisible: { label: 'Invisible', icon: 'ellipse-outline', color: '#8D9688' },
   offline: { label: 'Offline', icon: 'ellipse-outline', color: '#8D9688' }
 };
-const badgePriority = ['Founder', 'Admin', 'Mod', 'Staff', 'Vip', 'Partner', 'Demo', 'Member'];
+const badgePriority = ['Founder', 'Admin', 'Mod', 'Staff', 'Vip', 'Partner', 'Member'];
 const profileThemes: Record<NonNullable<User['profileTheme']>, { label: string; color: string; colors: [string, string, string] }> = {
   terria: { label: 'Terria', color: '#7D8B58', colors: ['#111712', '#19221A', '#2A2118'] },
   ember: { label: 'Ember', color: '#B86B4A', colors: ['#171111', '#261917', '#342018'] },
@@ -346,6 +348,19 @@ function Root() {
   useEffect(() => {
     writeBootCache(user, announcement);
   }, [user, announcement]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (chatFullscreen) return false;
+      if (tab !== 'home') {
+        setTab('home');
+        return true;
+      }
+      return true;
+    });
+    return () => subscription.remove();
+  }, [tab, chatFullscreen]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
@@ -896,6 +911,8 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
   const [search, setSearch] = useState('');
   const [pinnedOnly, setPinnedOnly] = useState(false);
   const [profileUser, setProfileUser] = useState<User | null>(null);
+  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
+  const [editingBody, setEditingBody] = useState('');
   const [revealedBlockedMessages, setRevealedBlockedMessages] = useState<Record<string, boolean>>({});
   const [reportReason, setReportReason] = useState('');
   const [reportProof, setReportProof] = useState('');
@@ -923,6 +940,26 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
     setFullscreen(Boolean(selected));
     return () => setFullscreen(false);
   }, [selected?.id]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (editingMessage) {
+        setEditingMessage(null);
+        return true;
+      }
+      if (profileUser) {
+        setProfileUser(null);
+        return true;
+      }
+      if (selected) {
+        setSelected(null);
+        return true;
+      }
+      return false;
+    });
+    return () => subscription.remove();
+  }, [selected?.id, profileUser?.id, editingMessage?.id]);
 
   useEffect(() => {
     if (!selected) return;
@@ -1073,9 +1110,30 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
 
   async function editMessage(message: Message) {
     if (message.senderId !== user.id) return;
-    Alert.prompt?.('Edit message', undefined, text => {
-      if (text?.trim()) api.editMessage(message.id, text).then(next => setMessages(prev => prev.map(item => item.id === next.id ? next : item))).catch(error => notify('error', error.message));
-    }, 'plain-text', message.body);
+    setEditingMessage(message);
+    setEditingBody(message.body);
+  }
+
+  async function saveEditedMessage() {
+    if (!editingMessage) return;
+    const text = editingBody.trim();
+    if (!text) return notify('error', 'Message cannot be empty.');
+    await api.editMessage(editingMessage.id, text)
+      .then(next => {
+        setMessages(prev => prev.map(item => item.id === next.id ? next : item));
+        setEditingMessage(null);
+        setEditingBody('');
+      })
+      .catch(error => notify('error', error.message));
+  }
+
+  async function downloadAttachment(message: Message) {
+    if (!message.attachmentUrl) return;
+    if (await Sharing.isAvailableAsync()) {
+      await Sharing.shareAsync(message.attachmentUrl).catch(() => Linking.openURL(message.attachmentUrl!).catch(() => notify('error', 'Could not download file.')));
+      return;
+    }
+    await Linking.openURL(message.attachmentUrl).catch(() => notify('error', 'Could not download file.'));
   }
 
   async function dmAction(action: 'mute' | 'block' | 'unfriend', hours?: number) {
@@ -1221,7 +1279,7 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
                 <Pressable style={styles.messageAuthor} onPress={() => setProfileUser(author)} onLongPress={() => setProfileUser(author)}><UserAvatar user={author} size={28} /><Text style={styles.messageName}>{author.displayName}</Text>{topBadge ? <BadgeIcon badge={topBadge} /> : null}<Text style={styles.messageTimeInline}>{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>{message.pinned ? <Ionicons name="pin" size={11} color="#E6C07A" /> : null}{message.isEdited ? <Text style={styles.editedTag}>edited</Text> : null}</Pressable>
                 <View style={[styles.messageBubble, message.senderId === user.id && styles.messageBubbleOwn]}>
                   {(message.type === 'gif' || message.type === 'image') && message.attachmentUrl ? <Image source={{ uri: message.attachmentUrl }} style={styles.chatImage} resizeMode="cover" /> : null}
-                  {message.type === 'file' && message.attachmentUrl ? <Pressable style={styles.fileAttachment} onPress={() => Linking.openURL(message.attachmentUrl!).catch(() => notify('error', 'Could not open file.'))}><Ionicons name="document-attach" size={18} color="#E6C07A" /><Text style={styles.fileAttachmentText} numberOfLines={1}>{message.body || 'Document'}</Text></Pressable> : null}
+                  {message.type === 'file' && message.attachmentUrl ? <Pressable style={styles.fileAttachment} onPress={() => downloadAttachment(message)}><Ionicons name="download" size={18} color="#E6C07A" /><Text style={styles.fileAttachmentText} numberOfLines={1}>{message.body || 'Document'}</Text></Pressable> : null}
                   {message.body ? <RichText text={message.body} /> : null}
                 </View>
                 <View style={styles.messageActions}><Pressable onPress={() => copyMessage(message)}><Ionicons name="copy" size={14} color="#AEB8A5" /></Pressable>{message.senderId === user.id && <Pressable onPress={() => editMessage(message)}><Ionicons name="pencil" size={14} color="#AEB8A5" /></Pressable>}</View>
@@ -1239,6 +1297,18 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
             <IconButton icon="send" onPress={() => send()} />
           </View>
           <ProfileSheet user={profileUser} currentUser={user} reportReason={reportReason} reportProof={reportProof} setReportReason={setReportReason} setReportProof={setReportProof} onClose={() => setProfileUser(null)} canUnfriend={selected.kind === 'dm'} onMute={dmAction} onReport={submitReport} />
+          <Modal visible={Boolean(editingMessage)} transparent animationType="fade">
+            <View style={styles.modalBackdrop}>
+              <View style={styles.announcementModal}>
+                <View style={styles.editorHeader}><Text style={[styles.cardTitle, { flex: 1 }]}>Edit Message</Text><IconButton icon="close" onPress={() => setEditingMessage(null)} /></View>
+                <TextInput style={[styles.composerInput, { minHeight: 96 }]} placeholder="Message" placeholderTextColor="#899486" value={editingBody} onChangeText={setEditingBody} multiline autoFocus />
+                <View style={styles.ticketActions}>
+                  <SecondaryButton label="Cancel" icon="close" onPress={() => setEditingMessage(null)} />
+                  <PrimaryButton label="Save" icon="save" onPress={saveEditedMessage} />
+                </View>
+              </View>
+            </View>
+          </Modal>
           <CallSheet
             call={activeCall}
             conversation={selected}
@@ -1656,7 +1726,7 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
             {sessions.loading ? <LoadingState /> : sessions.error ? <ErrorState message={sessions.error} onRetry={() => {
               setSessions(current => ({ ...current, loading: true, error: undefined }));
               api.sessions().then(data => setSessions({ loading: false, data })).catch(error => setSessions({ loading: false, data: [], error: error.message }));
-            }} /> : sessions.data.length === 0 ? <EmptyState title="No devices found" body="Your current session will appear after the next authenticated request." /> : sessions.data.map(session => (
+            }} /> : sessions.data.filter(session => !session.revokedAt).length === 0 ? <EmptyState title="No active devices" body="Your current session will appear after the next authenticated request." /> : sessions.data.filter(session => !session.revokedAt).map(session => (
               <GlassCard key={session.id}>
                 <View style={styles.deviceRow}>
                   <View style={styles.deviceIcon}>
@@ -1668,28 +1738,12 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
                     <Text style={styles.muted}>First login {new Date(session.createdAt).toLocaleString()}</Text>
                     <Text style={styles.muted}>Last seen {new Date(session.lastSeenAt).toLocaleString()}</Text>
                   </View>
-                  <View style={[styles.statusBadge, session.revokedAt && styles.statusBadgeMuted]}>
-                    <Text style={styles.statusText}>{session.revokedAt ? 'Logged out' : session.current ? 'Active' : 'Previous'}</Text>
+                  <View style={styles.statusBadge}>
+                    <Text style={styles.statusText}>{session.current ? 'Active' : 'Signed in'}</Text>
                   </View>
                 </View>
               </GlassCard>
             ))}
-            {false && <GlassCard>
-              <View style={styles.deviceRow}>
-                <View style={styles.deviceIcon}>
-                  <Ionicons name="phone-portrait" size={20} color="#E6C07A" />
-                </View>
-                <View style={styles.flex}>
-                  <Text style={styles.cardTitle}>{Device.deviceName || 'This Device'}</Text>
-                  <Text style={styles.muted}>{Device.modelName || 'Mobile'} · {Platform.OS}</Text>
-                  <Text style={styles.muted}>IP {user.lastIp || 'Unavailable'}</Text>
-                  <Text style={styles.muted}>Last login {user.activeAt ? new Date(user.activeAt as string).toLocaleString() : 'Active now'}</Text>
-                </View>
-                <View style={styles.statusBadge}>
-                  <Text style={styles.statusText}>Active</Text>
-                </View>
-              </View>
-            </GlassCard>}
             <GlassCard>
               <Text style={styles.cardTitle}>Session Management</Text>
               <Text style={[styles.muted, { marginTop: 8 }]}>New logins send an email with device, IP, approximate location, model, and time.</Text>
@@ -1827,7 +1881,7 @@ function DensityPreview({ value, onChange }: { value: keyof typeof densityChoice
 }
 
 function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: { setAnnouncement: (a: Announcement | null) => void; setShowAnnouncement: (v: boolean) => void; setTab: (tab: AppTab) => void; notify: (tone: 'error' | 'success' | 'info', text: string) => void }) {
-  const [page, setPage] = useState<'overview' | 'users' | 'moderation' | 'content' | 'badges' | 'logs' | 'analytics'>('overview');
+  const [page, setPage] = useState<'overview' | 'users' | 'alerts' | 'moderation' | 'content' | 'badges' | 'logs' | 'analytics'>('overview');
   const [stats, setStats] = useState<DashboardStats>(emptyStats);
   const [adminAnnouncements, setAdminAnnouncements] = useState<Announcement[]>([]);
   const [adminBlogs, setAdminBlogs] = useState<BlogPost[]>([]);
@@ -1854,7 +1908,11 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
   const [newBadgeName, setNewBadgeName] = useState('');
   const [userSearch, setUserSearch] = useState('');
   const [userResults, setUserResults] = useState<User[]>([]);
-  const [adminUsers, setAdminUsers] = useState<User[]>([]);
+  const [adminUsers, setAdminUsers] = useState<UserPage>({ items: [], total: 0, page: 1, pageSize: 10, totalPages: 1 });
+  const [adminUserSearch, setAdminUserSearch] = useState('');
+  const [adminUserPage, setAdminUserPage] = useState(1);
+  const [alerts, setAlerts] = useState<AlertFlag[]>([]);
+  const [alertSearch, setAlertSearch] = useState('');
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [analytics, setAnalytics] = useState<AdminAnalytics | null>(null);
   const [moderationTarget, setModerationTarget] = useState<User | null>(null);
@@ -1866,7 +1924,7 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
 
   const load = async () => {
-    const [nextStats, nextAnnouncements, nextBlogs, nextBadges, nextRoles, nextUsers, nextLogs, nextAnalytics] = await Promise.allSettled([api.adminStats(), api.adminAnnouncements(), api.blogs(), api.badgeCatalog(), api.roles(), api.adminUsers(), api.auditLogs(), api.adminAnalytics()]);
+    const [nextStats, nextAnnouncements, nextBlogs, nextBadges, nextRoles, nextUsers, nextLogs, nextAnalytics, nextAlerts] = await Promise.allSettled([api.adminStats(), api.adminAnnouncements(), api.blogs(), api.badgeCatalog(), api.roles(), api.adminUsers({ q: adminUserSearch, page: adminUserPage, limit: 10 }), api.auditLogs(), api.adminAnalytics(), api.adminAlerts(alertSearch)]);
     if (nextStats.status === 'fulfilled') setStats(nextStats.value);
     if (nextAnnouncements.status === 'fulfilled') setAdminAnnouncements(nextAnnouncements.value);
     if (nextBlogs.status === 'fulfilled') setAdminBlogs(nextBlogs.value);
@@ -1878,10 +1936,17 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
     if (nextUsers.status === 'fulfilled') setAdminUsers(nextUsers.value);
     if (nextLogs.status === 'fulfilled') setAuditLogs(nextLogs.value);
     if (nextAnalytics.status === 'fulfilled') setAnalytics(nextAnalytics.value);
-    const failures = [nextStats, nextAnnouncements, nextBlogs, nextBadges, nextRoles, nextUsers, nextLogs, nextAnalytics].filter(result => result.status === 'rejected') as PromiseRejectedResult[];
+    if (nextAlerts.status === 'fulfilled') setAlerts(nextAlerts.value);
+    const failures = [nextStats, nextAnnouncements, nextBlogs, nextBadges, nextRoles, nextUsers, nextLogs, nextAnalytics, nextAlerts].filter(result => result.status === 'rejected') as PromiseRejectedResult[];
     if (failures[0]) notify('error', failures[0].reason?.message || 'Some admin tools could not load.');
   };
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    api.adminUsers({ q: adminUserSearch, page: adminUserPage, limit: 10 })
+      .then(setAdminUsers)
+      .catch(error => notify('error', error.message));
+  }, [adminUserPage]);
 
   async function broadcast() {
     if (!title.trim() || !body.trim()) return notify('error', 'Add a title and message.');
@@ -1912,6 +1977,21 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
   async function exportUsers() {
     await api.exportUsers()
       .then(text => shareTextFile('zevryl-users.csv', text, notify))
+      .catch(error => notify('error', error.message));
+  }
+
+  async function searchAdminUsers() {
+    await api.adminUsers({ q: adminUserSearch, page: 1, limit: 10 })
+      .then(result => {
+        setAdminUsers(result);
+        setAdminUserPage(1);
+      })
+      .catch(error => notify('error', error.message));
+  }
+
+  async function searchAlerts() {
+    await api.adminAlerts(alertSearch)
+      .then(setAlerts)
       .catch(error => notify('error', error.message));
   }
 
@@ -1951,6 +2031,7 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
   const adminPages: Array<[typeof page, string, keyof typeof Ionicons.glyphMap]> = [
     ['overview', 'Overview', 'speedometer'],
     ['users', 'Users', 'people'],
+    ['alerts', 'Alerts', 'warning'],
     ['moderation', 'Moderation', 'hammer'],
     ['content', 'Content', 'newspaper'],
     ['badges', 'Badges/Roles', 'ribbon'],
@@ -1971,7 +2052,8 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
       {page === 'content' && <><GlassCard><Text style={styles.cardTitle}>Announcement</Text><Field icon="megaphone" placeholder="Title" value={title} onChangeText={setTitle} /><Field icon="document-text" placeholder="Message with links" value={body} onChangeText={setBody} multiline /><Field icon="image" placeholder="Image URL" value={imageUrl} onChangeText={setImageUrl} autoCapitalize="none" /><Field icon="link" placeholder="Clickable link URL" value={linkUrl} onChangeText={setLinkUrl} autoCapitalize="none" /><PrimaryButton label="Publish Announcement" icon="send" onPress={broadcast} /></GlassCard><GlassCard><Text style={styles.cardTitle}>Announcement Logs</Text><PrimaryButton label="Refresh" icon="refresh" onPress={load} />{adminAnnouncements.length === 0 ? <Text style={styles.muted}>No announcements published.</Text> : adminAnnouncements.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.title}</Text><Text style={styles.meta}>Published {new Date(item.createdAt).toLocaleString()}</Text></View><IconButton icon="trash" onPress={() => removeAnnouncement(item.id)} /></View>)}</GlassCard><GlassCard><Text style={styles.cardTitle}>Blog Post</Text><Field icon="newspaper" placeholder="Title" value={blogTitle} onChangeText={setBlogTitle} /><Field icon="document-text" placeholder="Body with links" value={blogBody} onChangeText={setBlogBody} multiline /><Field icon="image" placeholder="Image URL" value={blogImageUrl} onChangeText={setBlogImageUrl} autoCapitalize="none" /><Field icon="link" placeholder="Clickable link URL" value={blogLinkUrl} onChangeText={setBlogLinkUrl} autoCapitalize="none" /><PrimaryButton label="Publish Blog" icon="cloud-upload" onPress={createBlog} /></GlassCard><GlassCard><Text style={styles.cardTitle}>Blog Logs</Text>{adminBlogs.length === 0 ? <Text style={styles.muted}>No blog posts published.</Text> : adminBlogs.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.title}</Text><Text style={styles.meta}>{item.category || 'Update'} - {new Date(item.createdAt).toLocaleString()}</Text></View><IconButton icon="trash" onPress={() => removeBlog(item.id)} /></View>)}</GlassCard></>}
       {page === 'badges' && <><GlassCard><Text style={styles.cardTitle}>Badges</Text><Field icon="at" placeholder="Username, email, or tag" value={badgeUser} onChangeText={setBadgeUser} autoCapitalize="none" /><DropdownButton label="Selected badge" value={badge || 'Choose badge'} icon="ribbon" onPress={() => setBadgeMenuOpen(true)} /><PrimaryButton label="Grant Badge" icon="ribbon" onPress={() => api.grantBadge({ username: badgeUser, badge }).then(() => notify('success', 'Badge granted.')).catch(error => notify('error', error.message))} /><Field icon="add" placeholder="Create/edit badge name" value={newBadgeName} onChangeText={setNewBadgeName} /><View style={styles.ticketActions}><SecondaryButton label="Save Badge" icon="save" onPress={() => api.createBadge({ name: newBadgeName, icon: 'ribbon', color: '#E6C07A' }).then(() => { setNewBadgeName(''); load(); }).catch(error => notify('error', error.message))} />{badgeCatalog.find(item => item.name === badge) ? <SecondaryButton label="Delete Selected" icon="trash" onPress={() => api.deleteBadge(badgeCatalog.find(item => item.name === badge)!.id).then(load).catch(error => notify('error', error.message))} /> : null}</View></GlassCard><GlassCard><Text style={styles.cardTitle}>Roles</Text><Field icon="at" placeholder="Username, email, or tag" value={roleUser} onChangeText={setRoleUser} autoCapitalize="none" /><DropdownButton label="Selected role" value={roles.find(item => item.id === role)?.name || 'Choose role'} icon="key" onPress={() => setRoleMenuOpen(true)} /><Text style={styles.muted}>{roles.find(item => item.id === role)?.permissions.join(', ')}</Text><PrimaryButton label="Update Role" icon="key" onPress={() => api.setRole({ username: roleUser, role }).then(() => notify('success', 'Role updated.')).catch(error => notify('error', error.message))} /></GlassCard></>}
       {page === 'moderation' && <GlassCard><Text style={styles.cardTitle}>Punishment Center</Text><Field icon="search" placeholder="Search users" value={userSearch} onChangeText={setUserSearch} autoCapitalize="none" /><PrimaryButton label="Search Users" icon="search" onPress={searchModerationUsers} />{userResults.map(item => <Pressable key={item.id} style={styles.memberPick} onPress={() => setModerationTarget(item)}><Text style={styles.body}>{item.displayName} @{item.tag || item.username}</Text><Ionicons name={moderationTarget?.id === item.id ? 'radio-button-on' : 'radio-button-off'} size={22} color="#CDA16A" /></Pressable>)}<View style={styles.segment}>{(['mute', 'ban', 'unban'] as const).map(item => <Pressable key={item} style={[styles.segmentItem, moderationAction === item && styles.segmentActive]} onPress={() => setModerationAction(item)}><Text style={styles.segmentText}>{item}</Text></Pressable>)}</View><Field icon="timer" placeholder="Duration hours" value={moderationHours} onChangeText={setModerationHours} keyboardType="number-pad" /><Field icon="document-text" placeholder="Reason shown in punishment log" value={moderationReason} onChangeText={setModerationReason} multiline /><PrimaryButton label="Apply Punishment" icon="hammer" onPress={runModeration} /></GlassCard>}
-      {page === 'users' && <><GlassCard><Text style={styles.cardTitle}>Users</Text><Text style={styles.muted}>{adminUsers.length} recent users loaded. Tap edit to load account fields below.</Text>{adminUsers.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.displayName}</Text><Text style={styles.meta}>@{item.tag || item.username} - {item.role}</Text></View><IconButton icon="create" onPress={() => editAdminUser(item)} /></View>)}</GlassCard><GlassCard><Text style={styles.cardTitle}>User Control</Text><Field icon="at" placeholder="Username, email, or tag" value={adminUser} onChangeText={setAdminUser} autoCapitalize="none" /><Field icon="person" placeholder="New username" value={adminNewUsername} onChangeText={setAdminNewUsername} autoCapitalize="none" /><Field icon="keypad" placeholder="New 5-digit #" value={adminDisc} onChangeText={setAdminDisc} keyboardType="number-pad" maxLength={5} /><Field icon="call" placeholder="Mobile" value={adminMobile} onChangeText={setAdminMobile} keyboardType="phone-pad" /><Field icon="mail" placeholder="Alternate email" value={adminAltEmail} onChangeText={setAdminAltEmail} autoCapitalize="none" /><Field icon="lock-closed" placeholder="New password" value={adminPassword} onChangeText={setAdminPassword} secureTextEntry /><PrimaryButton label="Update User" icon="save" onPress={() => updateAdminUser(false)} /><SecondaryButton label="Reset Username Limit" icon="refresh" onPress={() => updateAdminUser(true)} /><SecondaryButton label="Download Users CSV" icon="download" onPress={exportUsers} /></GlassCard></>}
+      {page === 'users' && <><GlassCard><Text style={styles.cardTitle}>Users</Text><Field icon="search" placeholder="Search name, username, email, or #" value={adminUserSearch} onChangeText={setAdminUserSearch} autoCapitalize="none" /><PrimaryButton label="Search Users" icon="search" onPress={searchAdminUsers} /><Text style={styles.muted}>Page {adminUsers.page} of {adminUsers.totalPages} - {adminUsers.total} users. Showing max 10.</Text>{adminUsers.items.length === 0 ? <Text style={styles.muted}>No users found.</Text> : adminUsers.items.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.displayName}</Text><Text style={styles.meta}>@{item.tag || item.username} - {item.role}</Text></View><IconButton icon="create" onPress={() => editAdminUser(item)} /></View>)}<View style={styles.ticketActions}><SecondaryButton label="Previous" icon="chevron-back" onPress={() => setAdminUserPage(page => Math.max(1, page - 1))} /><SecondaryButton label="Next" icon="chevron-forward" onPress={() => setAdminUserPage(page => Math.min(adminUsers.totalPages, page + 1))} /></View></GlassCard><GlassCard><Text style={styles.cardTitle}>User Control</Text><Field icon="at" placeholder="Username, email, or tag" value={adminUser} onChangeText={setAdminUser} autoCapitalize="none" /><Field icon="person" placeholder="New username" value={adminNewUsername} onChangeText={setAdminNewUsername} autoCapitalize="none" /><Field icon="keypad" placeholder="New 5-digit #" value={adminDisc} onChangeText={setAdminDisc} keyboardType="number-pad" maxLength={5} /><Field icon="call" placeholder="Mobile" value={adminMobile} onChangeText={setAdminMobile} keyboardType="phone-pad" /><Field icon="mail" placeholder="Alternate email" value={adminAltEmail} onChangeText={setAdminAltEmail} autoCapitalize="none" /><Field icon="lock-closed" placeholder="New password" value={adminPassword} onChangeText={setAdminPassword} secureTextEntry /><PrimaryButton label="Update User" icon="save" onPress={() => updateAdminUser(false)} /><SecondaryButton label="Reset Username Limit" icon="refresh" onPress={() => updateAdminUser(true)} /><SecondaryButton label="Download Users CSV" icon="download" onPress={exportUsers} /></GlassCard></>}
+      {page === 'alerts' && <GlassCard><Text style={styles.cardTitle}>Alerts</Text><Text style={styles.muted}>Read-only AI-assisted keyword flags. No automatic action is performed.</Text><Field icon="search" placeholder="Search alerts, flags, users, or filenames" value={alertSearch} onChangeText={setAlertSearch} autoCapitalize="none" /><PrimaryButton label="Search Alerts" icon="search" onPress={searchAlerts} />{alerts.length === 0 ? <Text style={styles.muted}>No alert flags found.</Text> : alerts.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.matches.join(', ')}</Text><Text style={styles.meta}>{item.label} - {item.actor} - {new Date(item.createdAt).toLocaleString()}</Text><Text style={styles.muted}>{item.preview}</Text></View><Ionicons name="warning" size={20} color="#E6C07A" /></View>)}</GlassCard>}
       {page === 'logs' && <><GlassCard><Text style={styles.cardTitle}>Audit Logs</Text>{auditLogs.map(item => <AuditLogRow key={item.id} item={item} />)}</GlassCard><GlassCard><Text style={styles.cardTitle}>Punishment Logs</Text>{auditLogs.filter(item => item.targetType === 'punishment' || item.action.startsWith('punishment.')).map(item => <AuditLogRow key={item.id} item={item} compactAction={item.action.replace('punishment.', '')} />)}</GlassCard></>}
       {page === 'analytics' && <><StatsGrid values={[['Crash Logs', String(analytics?.crashLogs.length ?? 0)], ['Daily Users', String(analytics?.dailyUsers.at(-1)?.count ?? 0)], ['New Users', String(analytics?.newUsers.at(-1)?.count ?? 0)], ['Tickets', String(analytics?.tickets.at(-1)?.count ?? 0)]]} /><GraphCard title="Daily Users" data={analytics?.dailyUsers ?? []} /><GraphCard title="New Users" data={analytics?.newUsers ?? []} /><GraphCard title="Tickets Created" data={analytics?.tickets ?? []} /><GraphCard title="Reports Created" data={analytics?.reports ?? []} /><GlassCard><Text style={styles.cardTitle}>Crash Logs</Text>{(analytics?.crashLogs ?? []).length === 0 ? <Text style={styles.muted}>No app crash logs reported.</Text> : analytics!.crashLogs.map(item => <View key={item.id} style={styles.manageRow}><View style={styles.flex}><Text style={styles.body}>{item.reason}</Text><Text style={styles.meta}>{item.device || 'Unknown device'} - {new Date(item.createdAt).toLocaleString()}</Text></View></View>)}</GlassCard></>}
       <ChoiceModal visible={badgeMenuOpen} title="Choose Badge" items={badgeCatalog.map(item => ({ key: item.name, label: item.name, icon: item.icon as keyof typeof Ionicons.glyphMap }))} selected={badge} onChoose={(key) => { setBadge(key); setBadgeMenuOpen(false); }} onClose={() => setBadgeMenuOpen(false)} />
@@ -3158,9 +3240,9 @@ const styles = StyleSheet.create({
   profileAvatarText: { color: '#F4F0E6', fontWeight: '900', fontSize: 36 },
   profileLogo: { width: 96, height: 96, borderRadius: 20, borderWidth: 3, borderColor: '#1B241C' },
   statusDot: { position: 'absolute', width: 18, height: 18, borderRadius: 9, right: 1, bottom: 5, borderWidth: 3, borderColor: '#1B241C' },
-  profileStatusBubble: { position: 'absolute', left: 86, top: 24, minHeight: 38, maxWidth: 190, borderRadius: 18, backgroundColor: 'rgba(63,63,70,.94)', borderWidth: 1, borderColor: 'rgba(255,255,255,.08)', paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center', zIndex: 4 },
-  sheetStatusBubble: { position: 'absolute', left: 62, top: 18, minHeight: 36, maxWidth: 180, borderRadius: 17, backgroundColor: 'rgba(63,63,70,.94)', borderWidth: 1, borderColor: 'rgba(255,255,255,.08)', paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center', zIndex: 4 },
-  profileStatusText: { color: '#F4F0E6', fontSize: 15, fontWeight: '800' },
+  profileStatusBubble: { position: 'absolute', left: 82, top: 28, minHeight: 28, maxWidth: 176, borderRadius: 14, backgroundColor: 'rgba(63,63,70,.94)', borderWidth: 1, borderColor: 'rgba(255,255,255,.08)', paddingHorizontal: 10, paddingVertical: 4, alignItems: 'center', justifyContent: 'center', zIndex: 4 },
+  sheetStatusBubble: { position: 'absolute', left: 58, top: 20, minHeight: 26, maxWidth: 162, borderRadius: 13, backgroundColor: 'rgba(63,63,70,.94)', borderWidth: 1, borderColor: 'rgba(255,255,255,.08)', paddingHorizontal: 9, paddingVertical: 4, alignItems: 'center', justifyContent: 'center', zIndex: 4 },
+  profileStatusText: { color: '#F4F0E6', fontSize: 12, fontWeight: '800' },
   profileName: { color: '#F4F0E6', fontSize: 28, fontWeight: '900', letterSpacing: -0.3 },
   profileBadgeContainer: { flexDirection: 'row', gap: 10, marginTop: 8 },
   colorRow: { flexDirection: 'row', gap: 12, marginTop: 12 },
@@ -3196,9 +3278,9 @@ const styles = StyleSheet.create({
   badgeToast: { minWidth: 190, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(230,192,122,.34)', backgroundColor: '#182019', padding: 20, alignItems: 'center', gap: 8 },
   
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,.68)', alignItems: 'center', justifyContent: 'center', padding: 20 },
-  sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,.58)', justifyContent: 'flex-end' },
-  profileSheet: { maxHeight: '82%', borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, backgroundColor: '#182019', overflow: 'hidden' },
-  profileSheetContent: { padding: 16, paddingBottom: 34, gap: 12 },
+  sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,.58)', justifyContent: 'flex-end', zIndex: 80, elevation: 80 },
+  profileSheet: { maxHeight: '86%', borderTopLeftRadius: 18, borderTopRightRadius: 18, borderWidth: 1, backgroundColor: '#182019', overflow: 'hidden', zIndex: 90, elevation: 90 },
+  profileSheetContent: { padding: 16, paddingBottom: 108, gap: 12 },
   sheetBanner: { height: 96, borderRadius: 12, backgroundColor: '#33412E' },
   sheetHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   sheetAvatar: { width: 72, height: 72, borderRadius: 18, borderWidth: 2, borderColor: '#1B241C', backgroundColor: '#111712' },
