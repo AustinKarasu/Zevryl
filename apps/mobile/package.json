@@ -26,7 +26,6 @@
     "expo-file-system": "^19.0.23",
     "expo-font": "14.0.12",
     "expo-image-picker": "17.0.11",
-    "expo-intent-launcher": "^56.0.4",
     "expo-linear-gradient": "15.0.8",
     "expo-local-authentication": "~17.0.8",
     "expo-notifications": "~0.32.17",

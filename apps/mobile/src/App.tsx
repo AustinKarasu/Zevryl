@@ -6,7 +6,6 @@ import * as Device from 'expo-device';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
-import * as IntentLauncher from 'expo-intent-launcher';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Notifications from 'expo-notifications';
@@ -3000,13 +2999,12 @@ function UpdateModal({ update, visible, notify, onClose }: { update: AppUpdate |
       notify('info', 'Downloading update...');
       const result = await FileSystem.downloadAsync(update.apkUrl, target);
       if (result.status < 200 || result.status >= 300) throw new Error(`Download failed with status ${result.status}.`);
-      const contentUri = await FileSystem.getContentUriAsync(result.uri);
-      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-        data: contentUri,
-        type: 'application/vnd.android.package-archive',
-        flags: 1
-      });
-      notify('success', 'Installer opened. Approve the update to finish.');
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(result.uri, { mimeType: 'application/vnd.android.package-archive', dialogTitle: 'Install Zevryl update' });
+      } else {
+        await openLink(update.apkUrl);
+      }
+      notify('success', 'Update downloaded. Open the APK to finish installing.');
       void onClose();
     } catch (error) {
       notify('error', error instanceof Error ? error.message : 'Could not install update.');
