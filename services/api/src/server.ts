@@ -513,7 +513,8 @@ async function sendOtpEmail(to: string, code: string, purpose: 'register' | 'log
     '',
     code,
     '',
-    'This code expires in 10 minutes. If you did not request it, you can ignore this email.'
+    'This code expires in 10 minutes. If you do not see it in your inbox, check your spam or junk folder.',
+    'If you did not request it, you can ignore this email.'
   ].join('\n');
   return sendEmail({ to, subject, text });
 }
@@ -527,8 +528,15 @@ async function createOtpChallenge(user: any, purpose: 'register' | 'login') {
     codeHash: hashToken(code),
     attempts: 0
   }));
-  const delivered = await sendOtpEmail(user.email, code, purpose).catch(() => false);
-  return { otpRequired: true, otpToken, delivery: delivered ? 'email' : 'unavailable' };
+  const delivered = await sendOtpEmail(user.email, code, purpose).catch(error => {
+    app.log.error({ err: error, userId: user.id, purpose }, 'Failed to send OTP email');
+    return false;
+  });
+  if (!delivered) {
+    await redis.del(`auth:otp:${otpToken}`).catch(() => undefined);
+    throw app.httpErrors.serviceUnavailable('Could not send verification email. Please check SMTP settings and try again.');
+  }
+  return { otpRequired: true, otpToken, delivery: 'email', expiresInSeconds: 10 * 60 };
 }
 
 async function issueAuthSession(userRow: any, request: any) {
@@ -902,13 +910,10 @@ app.post('/auth/register', { config: { rateLimit: authRateLimit } }, async reque
   const body = z.object({ fullName: z.string().min(2), email, username: z.string().trim().min(3).max(30).regex(/^[a-z0-9._-]+$/i), password: z.string().min(8) }).parse(request.body);
   const id = crypto.randomUUID();
   const discriminator = String(Math.floor(1000 + Math.random() * 9000));
-  await pool.query('insert into users (id,email,username,discriminator,password_hash,display_name,presence,active_at,last_ip,email_verified) values ($1,$2,$3,$4,$5,$6,$7,now(),$8,$9)', [id, body.email, body.username.toLowerCase(), discriminator, await argon2.hash(body.password), body.fullName, mailDeliveryConfigured() ? 'offline' : 'online', request.ip, !mailDeliveryConfigured()]);
+  if (!mailDeliveryConfigured()) throw app.httpErrors.serviceUnavailable('Email OTP is required, but mail delivery is not configured.');
+  await pool.query('insert into users (id,email,username,discriminator,password_hash,display_name,presence,active_at,last_ip,email_verified) values ($1,$2,$3,$4,$5,$6,$7,now(),$8,$9)', [id, body.email, body.username.toLowerCase(), discriminator, await argon2.hash(body.password), body.fullName, 'offline', request.ip, false]);
   const user = (await pool.query('select * from users where id=$1', [id])).rows[0];
   await audit(id, 'auth.register', 'user', id);
-  if (!mailDeliveryConfigured()) {
-    await audit(id, 'auth.otp_skipped_mail_unconfigured', 'user', id);
-    return issueAuthSession(user, request);
-  }
   return createOtpChallenge(user, 'register');
 });
 
@@ -923,13 +928,7 @@ app.post('/auth/login', { config: { rateLimit: authRateLimit } }, async request 
     throw app.httpErrors.unauthorized('Email or password is incorrect.');
   }
   await clearFailedLogin(identity, request.ip);
-  if (!mailDeliveryConfigured()) {
-    await audit(row.id, 'auth.otp_skipped_mail_unconfigured', 'user', row.id);
-    const session = await issueAuthSession(row, request);
-    await audit(row.id, 'auth.login', 'user', row.id);
-    sendLoginAlert(row, request).catch(() => undefined);
-    return session;
-  }
+  if (!mailDeliveryConfigured()) throw app.httpErrors.serviceUnavailable('Email OTP is required, but mail delivery is not configured.');
   return createOtpChallenge(row, row.email_verified === false ? 'register' : 'login');
 });
 

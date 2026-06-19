@@ -9,7 +9,7 @@ const configuredUrl = normalizeApiUrl(
     (Constants.expoConfig?.extra?.apiUrl as string | undefined) ||
     ''
 );
-const requestTimeoutMs = 15000;
+const requestTimeoutMs = 25000;
 const accessRefreshSkewSeconds = 300;
 let refreshInFlight: Promise<boolean> | null = null;
 
@@ -155,6 +155,15 @@ async function validAccessToken() {
   return accessToken;
 }
 
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function canRetryRequest(init: RequestInit) {
+  const method = (init.method || 'GET').toUpperCase();
+  return method === 'GET' || method === 'HEAD';
+}
+
 async function request<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
   if (!configuredUrl) {
     throw new ApiError(0, 'Backend API URL is not configured for this build.');
@@ -171,6 +180,10 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
   try {
     response = await fetch(`${configuredUrl}${path}`, { ...init, headers, signal: controller.signal });
   } catch (error) {
+    if (retry && canRetryRequest(init)) {
+      await sleep(900);
+      return request<T>(path, init, false);
+    }
     const timedOut = error instanceof Error && error.name === 'AbortError';
     throw new ApiError(
       0,
@@ -184,6 +197,10 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
 
   if (!response.ok) {
     if (response.status === 401 && retry && await refreshSession()) return request<T>(path, init, false);
+    if ([502, 503, 504].includes(response.status) && retry && canRetryRequest(init)) {
+      await sleep(900);
+      return request<T>(path, init, false);
+    }
     if (response.status === 401) await clearTokens();
     throw new ApiError(response.status, await responseErrorMessage(response));
   }
@@ -197,9 +214,23 @@ async function requestText(path: string, init: RequestInit = {}, retry = true): 
   headers.set('X-Zevryl-Device', deviceLabel() || 'Mobile app');
   const accessToken = await validAccessToken();
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
-  const response = await fetch(`${configuredUrl}${path}`, { ...init, headers });
+  let response: Response;
+  try {
+    response = await fetch(`${configuredUrl}${path}`, { ...init, headers });
+  } catch (error) {
+    if (retry && canRetryRequest(init)) {
+      await sleep(900);
+      return requestText(path, init, false);
+    }
+    const timedOut = error instanceof Error && error.name === 'AbortError';
+    throw new ApiError(0, timedOut ? `Zevryl API is taking too long to respond at ${configuredUrl}. Please try again.` : `Cannot reach Zevryl backend at ${configuredUrl}. Check that the API is online and this device can access it.`);
+  }
   if (!response.ok) {
     if (response.status === 401 && retry && await refreshSession()) return requestText(path, init, false);
+    if ([502, 503, 504].includes(response.status) && retry && canRetryRequest(init)) {
+      await sleep(900);
+      return requestText(path, init, false);
+    }
     if (response.status === 401) await clearTokens();
     throw new ApiError(response.status, await responseErrorMessage(response));
   }
@@ -245,19 +276,19 @@ async function uploadFile(asset: { uri: string; name?: string | null; mimeType?:
 export const api = {
   url: configuredUrl ?? 'Not configured',
   login: (emailOrUsername: string, password: string, twoFactorCode?: string) =>
-    request<{ user?: User; accessToken?: string; refreshToken?: string; otpRequired?: boolean; otpToken?: string; delivery?: string }>('/auth/login', {
+    request<{ user?: User; accessToken?: string; refreshToken?: string; otpRequired?: boolean; otpToken?: string; delivery?: string; expiresInSeconds?: number }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ emailOrUsername, password, twoFactorCode })
     }),
   register: (payload: { fullName: string; email: string; username: string; password: string }) =>
-    request<{ user?: User; accessToken?: string; refreshToken?: string; otpRequired?: boolean; otpToken?: string; delivery?: string }>('/auth/register', {
+    request<{ user?: User; accessToken?: string; refreshToken?: string; otpRequired?: boolean; otpToken?: string; delivery?: string; expiresInSeconds?: number }>('/auth/register', {
       method: 'POST',
       body: JSON.stringify(payload)
     }),
   verifyOtp: (payload: { otpToken: string; code: string }) =>
     request<{ user: User; accessToken: string; refreshToken: string }>('/auth/otp/verify', { method: 'POST', body: JSON.stringify(payload) }),
   resendOtp: (otpToken: string) =>
-    request<{ otpRequired: boolean; otpToken: string; delivery?: string }>('/auth/otp/request', { method: 'POST', body: JSON.stringify({ otpToken }) }),
+    request<{ otpRequired: boolean; otpToken: string; delivery?: string; expiresInSeconds?: number }>('/auth/otp/request', { method: 'POST', body: JSON.stringify({ otpToken }) }),
   me: () => request<User>('/me'),
   updateProfile: (payload: Partial<Pick<User, 'displayName' | 'bio' | 'pronouns' | 'customStatus' | 'profileColor' | 'profileTheme' | 'density' | 'avatarUrl' | 'bannerUrl' | 'presence' | 'language'>>) =>
     request<User>('/me/profile', { method: 'PATCH', body: JSON.stringify(payload) }),

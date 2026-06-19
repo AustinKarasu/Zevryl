@@ -6,6 +6,7 @@ import * as Device from 'expo-device';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
+import * as IntentLauncher from 'expo-intent-launcher';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Notifications from 'expo-notifications';
@@ -70,6 +71,7 @@ const bootCacheMaxAgeMs = 1000 * 60 * 60 * 24 * 7;
 const autoLoginKey = 'zevryl.security.autoLogin';
 const biometricLoginKey = 'zevryl.security.biometricLogin';
 const maxDocumentBytes = 500 * 1024 * 1024;
+const currentAppVersion = Constants.nativeAppVersion || Constants.expoConfig?.version || '1.0.0';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -398,10 +400,10 @@ function Root() {
   useEffect(() => {
     api.latestUpdate()
       .then(update => {
-        if (!update?.version || update.version === '1.0.0') return;
+        if (!update?.version || !isNewerVersion(update.version)) return;
         const key = `zevryl.update.seen.${update.version}`;
         SecureStore.getItemAsync(key).then(seen => {
-          if (!seen) {
+          if (update.required || !seen) {
             setUpdateInfo(update);
             setShowUpdate(true);
           }
@@ -491,8 +493,8 @@ function Root() {
             if (announcement) await api.markAnnouncementRead(announcement.id).catch(() => undefined);
           }}
         />
-        <UpdateModal update={updateInfo} visible={showUpdate} onClose={async () => {
-          if (updateInfo?.version) await SecureStore.setItemAsync(`zevryl.update.seen.${updateInfo.version}`, '1');
+        <UpdateModal update={updateInfo} visible={showUpdate} notify={showNotice} onClose={async () => {
+          if (updateInfo?.version && !updateInfo.required) await SecureStore.setItemAsync(`zevryl.update.seen.${updateInfo.version}`, '1');
           setShowUpdate(false);
         }} />
       </SafeAreaView>
@@ -592,7 +594,7 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
         setOtpToken(result.otpToken);
         setOtpDelivery(result.delivery || '');
         setOtpCode('');
-        notify(result.delivery === 'email' ? 'success' : 'info', result.delivery === 'email' ? 'Verification code sent to your email.' : 'OTP created, but email delivery is not configured.');
+        notify('success', 'Verification code sent. Check inbox and spam.');
         return;
       }
       if (!result.user || !result.accessToken || !result.refreshToken) throw new Error('Sign in needs verification.');
@@ -631,7 +633,7 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
         setOtpToken(result.otpToken);
         setOtpDelivery(result.delivery || '');
         setOtpCode('');
-        notify(result.delivery === 'email' ? 'success' : 'info', result.delivery === 'email' ? 'New code sent.' : 'OTP refreshed, but email delivery is not configured.');
+        notify('success', 'New code sent. Check inbox and spam.');
       })
       .catch(error => notify('error', error.message));
   }
@@ -651,7 +653,7 @@ function AuthScreen({ onDone, notify, notice }: { onDone: (user: User, accessTok
           <Text style={styles.authText}>A grounded Terria workspace for friends, staff, updates, and secure DMs.</Text>
           {otpToken ? (
             <>
-              <Text style={styles.muted}>{otpDelivery === 'email' ? 'Enter the 6-digit code sent to your email.' : 'Email delivery is not configured. Add SMTP settings on the server, then resend.'}</Text>
+              <Text style={styles.muted}>Enter the 6-digit code sent to your email. It expires in 10 minutes. Check spam or junk if it is not in your inbox.</Text>
               <Field icon="keypad" placeholder="6-digit code" value={otpCode} onChangeText={(value) => setOtpCode(value.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" maxLength={6} />
               <PrimaryButton label="Verify Code" icon="shield-checkmark" busy={busy} onPress={verifyOtp} />
               <SecondaryButton label="Resend Code" icon="mail" onPress={resendOtp} />
@@ -953,6 +955,21 @@ function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'erro
       </Modal>
     </ScrollView>
   );
+}
+
+function isNewerVersion(remote?: string, current = currentAppVersion) {
+  if (!remote || remote === current) return false;
+  const parse = (value: string) => value.split(/[.-]/).map(part => Number.parseInt(part, 10)).map(part => Number.isFinite(part) ? part : 0);
+  const next = parse(remote);
+  const installed = parse(current);
+  const length = Math.max(next.length, installed.length);
+  for (let index = 0; index < length; index += 1) {
+    const a = next[index] ?? 0;
+    const b = installed[index] ?? 0;
+    if (a > b) return true;
+    if (a < b) return false;
+  }
+  return false;
 }
 
 function StoryViewer({
@@ -2967,8 +2984,36 @@ function AnnouncementModal({ announcement, visible, onClose }: { announcement: A
   );
 }
 
-function UpdateModal({ update, visible, onClose }: { update: AppUpdate | null; visible: boolean; onClose: () => void }) {
+function UpdateModal({ update, visible, notify, onClose }: { update: AppUpdate | null; visible: boolean; notify: (tone: 'error' | 'success' | 'info', text: string) => void; onClose: () => void }) {
+  const [updating, setUpdating] = useState(false);
   if (!update) return null;
+  async function installUpdate() {
+    if (!update?.apkUrl) return;
+    setUpdating(true);
+    try {
+      if (Platform.OS !== 'android') {
+        await openLink(update.apkUrl);
+        return;
+      }
+      const safeVersion = update.version.replace(/[^a-zA-Z0-9._-]+/g, '-');
+      const target = `${FileSystem.cacheDirectory || FileSystem.documentDirectory}zevryl-${safeVersion}.apk`;
+      notify('info', 'Downloading update...');
+      const result = await FileSystem.downloadAsync(update.apkUrl, target);
+      if (result.status < 200 || result.status >= 300) throw new Error(`Download failed with status ${result.status}.`);
+      const contentUri = await FileSystem.getContentUriAsync(result.uri);
+      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+        data: contentUri,
+        type: 'application/vnd.android.package-archive',
+        flags: 1
+      });
+      notify('success', 'Installer opened. Approve the update to finish.');
+      void onClose();
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : 'Could not install update.');
+    } finally {
+      setUpdating(false);
+    }
+  }
   return (
     <Modal visible={visible} transparent animationType="fade">
       <View style={styles.modalBackdrop}>
@@ -2976,8 +3021,9 @@ function UpdateModal({ update, visible, onClose }: { update: AppUpdate | null; v
           <Text style={styles.kicker}>App Update</Text>
           <Text style={styles.heroSmall}>New Update {update.version}</Text>
           <Text style={styles.body}>{update.notes || 'Performance, UI, messaging, and stability improvements are ready.'}</Text>
+          <Text style={styles.muted}>Installed version: {currentAppVersion}</Text>
           <View style={styles.modalActions}>
-            {update.apkUrl ? <PrimaryButton label="Update App" icon="download" onPress={() => { openLink(update.apkUrl); void onClose(); }} /> : null}
+            {update.apkUrl ? <PrimaryButton label={updating ? 'Downloading...' : 'Update App'} icon="download" busy={updating} onPress={installUpdate} /> : null}
             <SecondaryButton label={update.required ? 'Close' : 'Later'} icon="close" onPress={onClose} />
           </View>
         </View>

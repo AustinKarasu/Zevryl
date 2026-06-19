@@ -30,7 +30,7 @@ const app = {
         backgroundColor: '#1475F8'
       },
       usesCleartextTraffic: true,
-      permissions: ['INTERNET', 'CAMERA', 'RECORD_AUDIO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VIDEO', 'POST_NOTIFICATIONS']
+      permissions: ['INTERNET', 'CAMERA', 'RECORD_AUDIO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VIDEO', 'POST_NOTIFICATIONS', 'REQUEST_INSTALL_PACKAGES']
     },
     extra: {
       apiUrl: 'http://150.242.202.246:4100'
