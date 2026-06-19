@@ -64,6 +64,7 @@ function toUser(row: any) {
     previousBanners: row.previous_banners ?? [],
     profileColor: row.profile_color,
     profileTheme: row.profile_theme ?? 'terria',
+    density: row.display_density ?? 'comfortable',
     language: row.language ?? 'en',
     bio: row.bio ?? '',
     pronouns: row.pronouns ?? undefined,
@@ -210,6 +211,7 @@ async function migrate() {
     alter table users add column if not exists previous_avatars text[] not null default '{}';
     alter table users add column if not exists previous_banners text[] not null default '{}';
     alter table users add column if not exists profile_theme text not null default 'terria';
+    alter table users add column if not exists display_density text not null default 'comfortable';
     alter table users add column if not exists language text not null default 'en';
     alter table users add column if not exists active_at timestamptz;
     alter table users add column if not exists last_ip text;
@@ -331,7 +333,10 @@ async function requireAuth(request: any) {
   const header = request.headers.authorization;
   if (!header?.startsWith('Bearer ')) throw app.httpErrors.unauthorized('Please sign in.');
   const verified = await jwtVerify(header.slice(7), accessKey);
-  request.auth = { id: String(verified.payload.sub), role: verified.payload.role as Auth['role'] };
+  const userId = String(verified.payload.sub ?? '');
+  const user = (await pool.query('select id, role from users where id=$1 limit 1', [userId])).rows[0];
+  if (!user) throw app.httpErrors.unauthorized('Please sign in again.');
+  request.auth = { id: user.id, role: user.role as Auth['role'] };
 }
 
 function requireRole(request: any, roles: Auth['role'][]) {
@@ -545,6 +550,7 @@ app.patch('/me/profile', async request => {
     customStatus: z.string().max(80).optional(),
     profileColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
     profileTheme: z.enum(['terria', 'ember', 'ocean', 'mono', 'midnight', 'forest', 'rose', 'graphite']).optional(),
+    density: z.enum(['compact', 'comfortable', 'spacious']).optional(),
     avatarUrl: z.string().optional(),
     bannerUrl: z.string().optional(),
     presence: z.enum(['online', 'idle', 'dnd', 'invisible', 'offline']).optional(),
@@ -563,11 +569,12 @@ app.patch('/me/profile', async request => {
       banner_url=coalesce($9,banner_url),
       presence=coalesce($10,presence),
       language=coalesce($11,language),
+      display_density=coalesce($12,display_density),
       previous_avatars=case when $8::text is not null and avatar_url is not null then array_append(previous_avatars, avatar_url) else previous_avatars end,
       previous_banners=case when $9::text is not null and banner_url is not null then array_append(previous_banners, banner_url) else previous_banners end,
       updated_at=now()
      where id=$1 returning *`,
-    [request.auth!.id, body.displayName, body.bio, body.pronouns ?? current.pronouns, body.customStatus ?? current.custom_status, body.profileColor, body.profileTheme, body.avatarUrl, body.bannerUrl, body.presence, body.language]
+    [request.auth!.id, body.displayName, body.bio, body.pronouns ?? current.pronouns, body.customStatus ?? current.custom_status, body.profileColor, body.profileTheme, body.avatarUrl, body.bannerUrl, body.presence, body.language, body.density]
   )).rows[0];
   await audit(request.auth!.id, 'profile.update', 'user', request.auth!.id);
   return toUser(row);

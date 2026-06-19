@@ -14,6 +14,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Image,
   KeyboardAvoidingView,
   Linking,
@@ -47,6 +48,8 @@ import type {
 
 const logo = require('../assets/zevryl-logo.png');
 const wordmark = require('../assets/zevryl-wordmark.png');
+const bootCacheKey = 'zevryl.boot.cache.v1';
+const bootCacheMaxAgeMs = 1000 * 60 * 60 * 24 * 7;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -61,6 +64,8 @@ Notifications.setNotificationHandler({
 type Loadable<T> = { loading: boolean; data: T; error?: string };
 type NoticeTone = 'error' | 'success' | 'info';
 type Notice = { tone: NoticeTone; text: string } | null;
+type BootCache = { user: User | null; announcement: Announcement | null; savedAt: number };
+type CallState = { kind: 'voice' | 'video'; roomName: string; url?: string; token?: string; joined: boolean; muted: boolean; deafened: boolean };
 
 const emptyFriends: FriendState = { friends: [], incoming: [], outgoing: [], blocked: [] };
 const emptyStats: DashboardStats = { users: 0, reports: 0, activeGroups: 0, systemHealth: 0, announcements: 0, blogs: 0 };
@@ -93,6 +98,29 @@ const profileThemes: Record<NonNullable<User['profileTheme']>, { label: string; 
   rose: { label: 'Rose', color: '#B66A7A', colors: ['#160D11', '#24151B', '#301C24'] },
   graphite: { label: 'Graphite', color: '#8B9188', colors: ['#0E0F0E', '#191B19', '#242824'] }
 };
+
+async function readBootCache() {
+  const raw = await SecureStore.getItemAsync(bootCacheKey);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as BootCache;
+    if (!parsed.savedAt || Date.now() - parsed.savedAt > bootCacheMaxAgeMs) return null;
+    return parsed;
+  } catch {
+    await SecureStore.deleteItemAsync(bootCacheKey).catch(() => undefined);
+    return null;
+  }
+}
+
+async function writeBootCache(user: User | null, announcement: Announcement | null) {
+  if (!user) {
+    await SecureStore.deleteItemAsync(bootCacheKey).catch(() => undefined);
+    return;
+  }
+  const cache: BootCache = { user, announcement, savedAt: Date.now() };
+  await SecureStore.setItemAsync(bootCacheKey, JSON.stringify(cache)).catch(() => undefined);
+}
+
 const colorChoices = [
   '#EF4444', '#F97316', '#F59E0B', '#EAB308', '#84CC16', '#22C55E',
   '#14B8A6', '#06B6D4', '#0EA5E9', '#3B82F6', '#6366F1', '#8B5CF6',
@@ -155,14 +183,53 @@ function Root() {
   };
 
   useEffect(() => {
-    Promise.all([api.me(), api.latestAnnouncement()])
-      .then(([me, latest]) => {
+    let mounted = true;
+    async function boot() {
+      const hasToken = await SecureStore.getItemAsync('zevryl.accessToken').catch(() => null);
+      if (hasToken) {
+        const cached = await readBootCache();
+        if (mounted && cached?.user) {
+          setUser(cached.user);
+          setAnnouncement(cached.announcement);
+          setShowAnnouncement(Boolean(cached.announcement?.isPopup && !cached.announcement.readAt));
+          setBooting(false);
+        }
+      }
+
+      try {
+        const [me, latest] = await Promise.all([api.me(), api.latestAnnouncement()]);
+        if (!mounted) return;
         setUser(me);
         setAnnouncement(latest);
         setShowAnnouncement(Boolean(latest?.isPopup && !latest.readAt));
-      })
-      .catch(() => undefined)
-      .finally(() => setTimeout(() => setBooting(false), 550));
+      } catch {
+        if (!hasToken && mounted) setUser(null);
+      } finally {
+        if (mounted) setTimeout(() => setBooting(false), 350);
+      }
+    }
+    boot();
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    writeBootCache(user, announcement);
+  }, [user, announcement]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', state => {
+      if (state !== 'active' || !user) return;
+      api.me().then(setUser).catch(() => undefined);
+    });
+    return () => subscription.remove();
+  }, [user?.id]);
+
+  useEffect(() => {
+    Notifications.setNotificationCategoryAsync('active-call', [
+      { identifier: 'mute-call', buttonTitle: 'Mute', options: { opensAppToForeground: false } },
+      { identifier: 'deafen-call', buttonTitle: 'Deafen', options: { opensAppToForeground: false } },
+      { identifier: 'leave-call', buttonTitle: 'Leave', options: { opensAppToForeground: false, isDestructive: true } }
+    ]).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -288,16 +355,19 @@ function SplashScreen() {
     <TerraShell>
       <SafeAreaView style={styles.splash}>
         <View style={styles.splashContent}>
+          <View style={styles.splashLogoFrame}>
+            <Image source={logo} style={styles.splashLogo} resizeMode="contain" />
+          </View>
           <Image source={wordmark} style={styles.splashWordmark} resizeMode="contain" />
           <Text style={styles.brandTitle}>Zevryl</Text>
-          <Text style={styles.brandSub}>SECURE COMMUNITY</Text>
+          <Text style={styles.brandSub}>PRIVATE CHAT NETWORK</Text>
           <Text style={styles.splashTagline}>Connect privately, chat freely</Text>
         </View>
         <View style={styles.splashFooter}>
           <View style={styles.loadingBar}>
             <View style={styles.loadingFill} />
           </View>
-          <Text style={styles.loadingText}>Initializing secure connection...</Text>
+          <Text style={styles.loadingText}>Opening your session...</Text>
         </View>
       </SafeAreaView>
     </TerraShell>
@@ -612,7 +682,8 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
   const [profileUser, setProfileUser] = useState<User | null>(null);
   const [reportReason, setReportReason] = useState('');
   const [reportProof, setReportProof] = useState('');
-  const [activeCall, setActiveCall] = useState<{ kind: 'voice' | 'video'; roomName: string; url?: string; token?: string; joined: boolean } | null>(null);
+  const [activeCall, setActiveCall] = useState<CallState | null>(null);
+  const [callNotificationId, setCallNotificationId] = useState<string | null>(null);
   const [showMembers, setShowMembers] = useState(false);
   const messageScrollRef = useRef<ScrollView | null>(null);
 
@@ -722,11 +793,54 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
     if (!selected) return;
     await api.callToken(`${kind}-${selected.id}`)
       .then(result => {
-        setActiveCall({ kind, roomName: result.roomName, url: result.url, token: result.token, joined: false });
+        setActiveCall({ kind, roomName: result.roomName, url: result.url, token: result.token, joined: false, muted: false, deafened: false });
         notify('success', `${kind === 'voice' ? 'Voice' : 'Video'} invite sent.`);
       })
       .catch(error => notify('error', error.message));
   }
+
+  async function showCallNotification(call: CallState) {
+    if (!selected) return;
+    if (callNotificationId) await Notifications.dismissNotificationAsync(callNotificationId).catch(() => undefined);
+    const id = await Notifications.scheduleNotificationAsync({
+      content: {
+        title: call.kind === 'voice' ? 'Voice call connected' : 'Video call connected',
+        body: `${selected.title} - ${selected.participants.length} member${selected.participants.length === 1 ? '' : 's'} in this chat`,
+        categoryIdentifier: 'active-call',
+        data: { conversationId: selected.id, roomName: call.roomName, kind: 'call' },
+        sound: false
+      },
+      trigger: null
+    });
+    setCallNotificationId(id);
+  }
+
+  async function joinActiveCall() {
+    setActiveCall(call => {
+      if (!call) return call;
+      const next = { ...call, joined: true };
+      showCallNotification(next).catch(() => undefined);
+      return next;
+    });
+  }
+
+  async function leaveActiveCall() {
+    if (callNotificationId) await Notifications.dismissNotificationAsync(callNotificationId).catch(() => undefined);
+    setCallNotificationId(null);
+    setActiveCall(null);
+  }
+
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener(response => {
+      const action = response.actionIdentifier;
+      const roomName = response.notification.request.content.data?.roomName;
+      if (!roomName || typeof roomName !== 'string') return;
+      if (action === 'mute-call') setActiveCall(call => call?.roomName === roomName ? { ...call, muted: !call.muted } : call);
+      if (action === 'deafen-call') setActiveCall(call => call?.roomName === roomName ? { ...call, deafened: !call.deafened, muted: true } : call);
+      if (action === 'leave-call') leaveActiveCall();
+    });
+    return () => subscription.remove();
+  }, [callNotificationId]);
 
   const emojiChoices = emojis.filter(item => !emojiSearch.trim() || item.includes(emojiSearch.trim()));
   const gifChoices = gifs.filter(item => !gifSearch.trim() || item.tags.toLowerCase().includes(gifSearch.trim().toLowerCase()));
@@ -792,7 +906,15 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
             <IconButton icon="send" onPress={() => send()} />
           </View>
           <ProfileSheet user={profileUser} currentUser={user} reportReason={reportReason} reportProof={reportProof} setReportReason={setReportReason} setReportProof={setReportProof} onClose={() => setProfileUser(null)} onMute={dmAction} onReport={submitReport} />
-          <CallSheet call={activeCall} conversation={selected} currentUser={user} onJoin={() => setActiveCall(call => call ? { ...call, joined: true } : call)} onLeave={() => setActiveCall(null)} />
+          <CallSheet
+            call={activeCall}
+            conversation={selected}
+            currentUser={user}
+            onJoin={joinActiveCall}
+            onLeave={leaveActiveCall}
+            onToggleMute={() => setActiveCall(call => call ? { ...call, muted: !call.muted } : call)}
+            onToggleDeafen={() => setActiveCall(call => call ? { ...call, deafened: !call.deafened, muted: !call.deafened ? true : call.muted } : call)}
+          />
           <MemberSheet visible={showMembers} conversation={selected} onClose={() => setShowMembers(false)} />
         </View>
         )}
@@ -1194,17 +1316,29 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
             <GlassCard>
               <Text style={styles.cardTitle}>Active Theme</Text>
               <Text style={[styles.muted, { marginTop: 8 }]}>{profileThemes[user.profileTheme || 'terria'].label}</Text>
-              <ThemePicker value={user.profileTheme || 'terria'} onChange={(item) => api.updateProfile({ profileTheme: item }).then(next => { setUser(next); notify('success', 'Appearance updated.'); }).catch(error => notify('error', error.message))} />
+              <ThemePicker value={user.profileTheme || 'terria'} onChange={(item) => {
+                const previous = user;
+                setUser({ ...user, profileTheme: item });
+                api.updateProfile({ profileTheme: item }).then(next => { setUser(next); notify('success', 'Appearance updated.'); }).catch(error => { setUser(previous); notify('error', error.message); });
+              }} />
             </GlassCard>
             <GlassCard>
               <Text style={styles.cardTitle}>Accent Color</Text>
               <Text style={[styles.muted, { marginTop: 8 }]}>Pick your app/profile color from the RGB grid.</Text>
-              <ColorPicker value={user.profileColor} onChange={(color) => api.updateProfile({ profileColor: color }).then(next => { setUser(next); notify('success', 'Color updated.'); }).catch(error => notify('error', error.message))} />
+              <ColorPicker value={user.profileColor} onChange={(color) => {
+                const previous = user;
+                setUser({ ...user, profileColor: color });
+                api.updateProfile({ profileColor: color }).then(next => { setUser(next); notify('success', 'Color updated.'); }).catch(error => { setUser(previous); notify('error', error.message); });
+              }} />
             </GlassCard>
             <GlassCard>
               <Text style={styles.cardTitle}>Density</Text>
               <Text style={[styles.muted, { marginTop: 8 }]}>Tune spacing for compact lists, regular use, or larger touch targets.</Text>
-              <DensityPreview />
+              <DensityPreview value={user.density || 'comfortable'} onChange={(density) => {
+                const previous = user;
+                setUser({ ...user, density });
+                api.updateProfile({ density }).then(next => { setUser(next); notify('success', 'Density updated.'); }).catch(error => { setUser(previous); notify('error', error.message); });
+              }} />
             </GlassCard>
           </>
         )}
@@ -1280,14 +1414,13 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
   );
 }
 
-function DensityPreview() {
-  const [density, setDensity] = useState<keyof typeof densityChoices>('comfortable');
-  const scale = densityChoices[density].scale;
+function DensityPreview({ value, onChange }: { value: keyof typeof densityChoices; onChange: (density: keyof typeof densityChoices) => void }) {
+  const scale = densityChoices[value].scale;
   return (
     <View style={{ gap: 10, marginTop: 12 }}>
       <View style={styles.segment}>
         {(Object.keys(densityChoices) as Array<keyof typeof densityChoices>).map(item => (
-          <Pressable key={item} style={[styles.segmentItem, density === item && styles.segmentActive]} onPress={() => setDensity(item)}>
+          <Pressable key={item} style={[styles.segmentItem, value === item && styles.segmentActive]} onPress={() => onChange(item)}>
             <Text style={styles.segmentText}>{densityChoices[item].label}</Text>
           </Pressable>
         ))}
@@ -1662,17 +1795,22 @@ function CallSheet({
   conversation,
   currentUser,
   onJoin,
-  onLeave
+  onLeave,
+  onToggleMute,
+  onToggleDeafen
 }: {
-  call: { kind: 'voice' | 'video'; roomName: string; url?: string; token?: string; joined: boolean } | null;
+  call: CallState | null;
   conversation: Conversation | null;
   currentUser: User;
   onJoin: () => void;
   onLeave: () => void;
+  onToggleMute: () => void;
+  onToggleDeafen: () => void;
 }) {
   if (!call || !conversation) return null;
   const title = call.kind === 'voice' ? 'Voice Call' : 'Video Call';
   const possibleMembers = conversation.participants.length;
+  const connectedCount = call.joined ? 1 : 0;
   return (
     <Modal visible transparent animationType="slide">
       <View style={styles.sheetBackdrop}>
@@ -1685,7 +1823,8 @@ function CallSheet({
           <View style={styles.callStatusPanel}>
             <Ionicons name={call.kind === 'voice' ? 'call' : 'videocam'} size={30} color="#E6C07A" />
             <Text style={styles.heroSmall}>{call.joined ? 'Connected' : 'Invite Sent'}</Text>
-            <Text style={styles.muted}>{call.joined ? `1 connected - ${possibleMembers} can join` : `0 connected - ${possibleMembers} invited`}</Text>
+            <Text style={styles.muted}>{connectedCount} connected - {possibleMembers} member{possibleMembers === 1 ? '' : 's'} can join</Text>
+            {call.joined ? <Text style={styles.meta}>{call.muted ? 'Muted' : 'Mic on'} - {call.deafened ? 'Deafened' : 'Audio on'}</Text> : null}
           </View>
           <View style={styles.memberListCompact}>
             {conversation.participants.map(member => (
@@ -1699,11 +1838,27 @@ function CallSheet({
               </View>
             ))}
           </View>
+          {call.joined ? (
+            <View style={styles.callControls}>
+              <Pressable style={[styles.callControlButton, call.muted && styles.callControlActive]} onPress={onToggleMute}>
+                <Ionicons name={call.muted ? 'mic-off' : 'mic'} size={20} color="#F4F0E6" />
+                <Text style={styles.callControlText}>{call.muted ? 'Muted' : 'Mute'}</Text>
+              </Pressable>
+              <Pressable style={[styles.callControlButton, call.deafened && styles.callControlActive]} onPress={onToggleDeafen}>
+                <Ionicons name={call.deafened ? 'volume-mute' : 'volume-high'} size={20} color="#F4F0E6" />
+                <Text style={styles.callControlText}>{call.deafened ? 'Deafened' : 'Deafen'}</Text>
+              </Pressable>
+              <Pressable style={[styles.callControlButton, styles.callLeaveButton]} onPress={onLeave}>
+                <Ionicons name="call" size={20} color="#fff" />
+                <Text style={styles.callControlText}>Leave</Text>
+              </Pressable>
+            </View>
+          ) : null}
           <View style={styles.mediaActions}>
             {!call.joined ? <PrimaryButton label="Join Call" icon={call.kind === 'voice' ? 'call' : 'videocam'} onPress={onJoin} /> : null}
             <SecondaryButton label={call.joined ? 'Leave Call' : 'Cancel'} icon="close" onPress={onLeave} />
           </View>
-          {!call.url || !call.token ? <Text style={styles.meta}>Live call media is waiting for the server room token. Notifications still go out.</Text> : null}
+          {!call.url || !call.token ? <Text style={styles.meta}>Media server is not configured yet. Invites and call controls still work.</Text> : null}
         </View>
       </View>
     </Modal>
@@ -1957,17 +2112,18 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   terraBandTop: { position: 'absolute', left: 0, right: 0, top: 0, height: 170, backgroundColor: 'rgba(90,111,65,.24)' },
   terraBandBottom: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 180, backgroundColor: 'rgba(94,61,38,.22)' },
-  splash: { flex: 1, alignItems: 'center', justifyContent: 'space-between', padding: 26 },
-  splashContent: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
-  splashLogo: { width: 170, height: 170 },
-  splashWordmark: { width: '88%', maxWidth: 360, height: 128 },
-  brandTitle: { color: '#F4F0E6', fontSize: 32, fontWeight: '900', marginTop: 8, letterSpacing: -0.5 },
-  brandSub: { color: '#E6C07A', fontSize: 12, letterSpacing: 3.5, marginTop: 8, fontWeight: '800' },
-  splashTagline: { color: '#C9D1BE', fontSize: 15, marginTop: 6, letterSpacing: 0.3, fontStyle: 'italic' },
-  splashFooter: { gap: 14, paddingBottom: 16 },
-  loadingBar: { width: 200, height: 4, backgroundColor: '#20291E', borderRadius: 2, overflow: 'hidden' },
-  loadingFill: { width: '68%', height: 4, backgroundColor: 'rgba(205,161,106,.8)', borderRadius: 2 },
-  loadingText: { color: '#B8A47D', fontSize: 12, textAlign: 'center', fontWeight: '600', letterSpacing: 0.5 },
+  splash: { flex: 1, alignItems: 'center', justifyContent: 'space-between', padding: 28 },
+  splashContent: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, width: '100%' },
+  splashLogoFrame: { width: 138, height: 138, borderRadius: 34, borderWidth: 1, borderColor: 'rgba(230,192,122,.34)', backgroundColor: 'rgba(11,16,12,.58)', alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
+  splashLogo: { width: 104, height: 104 },
+  splashWordmark: { width: '78%', maxWidth: 300, height: 76 },
+  brandTitle: { color: '#F4F0E6', fontSize: 30, fontWeight: '900', marginTop: 4, letterSpacing: 0 },
+  brandSub: { color: '#E6C07A', fontSize: 12, letterSpacing: 2.4, marginTop: 6, fontWeight: '800' },
+  splashTagline: { color: '#C9D1BE', fontSize: 15, marginTop: 6, letterSpacing: 0, fontWeight: '600' },
+  splashFooter: { gap: 12, paddingBottom: 16, alignItems: 'center' },
+  loadingBar: { width: 220, height: 5, backgroundColor: '#20291E', borderRadius: 4, overflow: 'hidden' },
+  loadingFill: { width: '68%', height: 5, backgroundColor: 'rgba(230,192,122,.9)', borderRadius: 4 },
+  loadingText: { color: '#C4B58E', fontSize: 12, textAlign: 'center', fontWeight: '700', letterSpacing: 0 },
   helper: { color: '#B8A47D', fontSize: 11, letterSpacing: 1.5, marginTop: 10, fontWeight: '600' },
   authWrap: { flex: 1, justifyContent: 'center', padding: 16 },
   authPanel: { borderRadius: 10, borderWidth: 1, borderColor: 'rgba(230,192,122,.25)', backgroundColor: 'rgba(20,28,21,.92)', padding: 22, alignItems: 'center', gap: 14 },
@@ -2139,6 +2295,11 @@ const styles = StyleSheet.create({
   callCard: { gap: 12, borderColor: 'rgba(255,170,168,.15)', borderWidth: 1 },
   callSheet: { width: '100%', borderRadius: 12, backgroundColor: '#182019', borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', padding: 18, gap: 12 },
   callStatusPanel: { minHeight: 128, borderRadius: 12, backgroundColor: 'rgba(230,192,122,.09)', borderWidth: 1, borderColor: 'rgba(230,192,122,.18)', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  callControls: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  callControlButton: { flex: 1, minHeight: 58, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(218,226,202,.14)', backgroundColor: 'rgba(255,255,255,.06)', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  callControlActive: { backgroundColor: 'rgba(230,192,122,.18)', borderColor: 'rgba(230,192,122,.42)' },
+  callLeaveButton: { backgroundColor: 'rgba(210,64,72,.72)', borderColor: 'rgba(255,170,168,.45)' },
+  callControlText: { color: '#F4F0E6', fontSize: 12, fontWeight: '800' },
   
   // Profile
   profileHero: { alignItems: 'center', gap: 14, paddingTop: 8, paddingVertical: 20 },
@@ -2224,11 +2385,11 @@ const styles = StyleSheet.create({
   colorSwatch: { width: 48, height: 48, borderRadius: 10 },
   colorPicker: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 12 },
   languageChip: { minHeight: 38, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(218,226,202,.14)', paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,.04)' },
-  colorSwatchButton: { width: 34, height: 34, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,.18)' },
-  colorSwatchSelected: { borderColor: '#F4F0E6', borderWidth: 3 },
+  colorSwatchButton: { width: 38, height: 38, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,.18)' },
+  colorSwatchSelected: { borderColor: '#F4F0E6', borderWidth: 4 },
   themePicker: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 12 },
-  themeSwatch: { width: 82, gap: 6, alignItems: 'center' },
-  themeSwatchActive: { opacity: 1 },
+  themeSwatch: { width: 86, gap: 6, alignItems: 'center', borderRadius: 12, borderWidth: 1, borderColor: 'transparent', paddingVertical: 8 },
+  themeSwatchActive: { backgroundColor: 'rgba(230,192,122,.12)', borderColor: 'rgba(230,192,122,.5)' },
   themeSwatchGradient: { width: 56, height: 44, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,.16)', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   themeSwatchDot: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: '#F4F0E6' },
   dropdownButton: { minHeight: 58, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(218,226,202,.16)', backgroundColor: 'rgba(11,16,12,.72)', paddingHorizontal: 14, marginTop: 12, flexDirection: 'row', alignItems: 'center', gap: 12 },

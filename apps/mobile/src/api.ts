@@ -139,7 +139,7 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   me: () => request<User>('/me'),
-  updateProfile: (payload: Partial<Pick<User, 'displayName' | 'bio' | 'pronouns' | 'customStatus' | 'profileColor' | 'profileTheme' | 'avatarUrl' | 'bannerUrl' | 'presence' | 'language'>>) =>
+  updateProfile: (payload: Partial<Pick<User, 'displayName' | 'bio' | 'pronouns' | 'customStatus' | 'profileColor' | 'profileTheme' | 'density' | 'avatarUrl' | 'bannerUrl' | 'presence' | 'language'>>) =>
     request<User>('/me/profile', { method: 'PATCH', body: JSON.stringify(payload) }),
   updateAccount: (payload: { username?: string; discriminator?: string; mobile?: string; alternateEmail?: string }) =>
     request<User>('/me/account', { method: 'PATCH', body: JSON.stringify(payload) }),

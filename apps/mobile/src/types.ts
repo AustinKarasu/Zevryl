@@ -16,6 +16,7 @@ export type User = {
   previousBanners?: string[];
   profileColor: string;
   profileTheme?: 'terria' | 'ember' | 'ocean' | 'mono' | 'midnight' | 'forest' | 'rose' | 'graphite';
+  density?: 'compact' | 'comfortable' | 'spacious';
   language?: string;
   bio: string;
   pronouns?: string;
