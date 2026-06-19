@@ -633,6 +633,8 @@ function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'erro
   const [supportMessage, setSupportMessage] = useState('');
   const [showStoryCreate, setShowStoryCreate] = useState(false);
   const [storyCaption, setStoryCaption] = useState('');
+  const [storyMedia, setStoryMedia] = useState<{ uri: string; name: string; mimeType: string; mediaType: Story['mediaType']; durationMs: number } | null>(null);
+  const [storyUploading, setStoryUploading] = useState(false);
   const [storyMentionSearch, setStoryMentionSearch] = useState('');
   const [storyMentionResults, setStoryMentionResults] = useState<User[]>([]);
   const [storyMentionUser, setStoryMentionUser] = useState<User | null>(null);
@@ -656,7 +658,7 @@ function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'erro
   };
   useEffect(() => { load(); }, []);
 
-  async function createStory() {
+  async function chooseStoryMedia() {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) return notify('error', 'Gallery permission is required.');
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.All, quality: 0.82, videoMaxDuration: 60 });
@@ -665,23 +667,40 @@ function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'erro
     const mediaType = asset.type === 'video' ? 'video' : 'image';
     const durationMs = typeof asset.duration === 'number' ? asset.duration : 0;
     if (mediaType === 'video' && durationMs > 60000) return notify('error', 'Stories can only use videos up to 1 minute.');
-    const upload = await api.uploadFile({
+    setStoryMedia({
       uri: asset.uri,
       name: asset.fileName || `story-${Date.now()}.${mediaType === 'video' ? 'mp4' : 'jpg'}`,
-      mimeType: asset.mimeType || (mediaType === 'video' ? 'video/mp4' : 'image/jpeg')
+      mimeType: asset.mimeType || (mediaType === 'video' ? 'video/mp4' : 'image/jpeg'),
+      mediaType,
+      durationMs
     });
-    await api.createStory({ mediaUrl: upload.url, mediaType, caption: storyCaption, mentionUserId: storyMentionUser?.id, allowComments: !storyCommentsOff, durationMs })
-      .then(story => {
+  }
+
+  async function createStory() {
+    if (!storyMedia) return notify('error', 'Choose a photo or video first.');
+    setStoryUploading(true);
+    try {
+      const media = storyMedia;
+      const upload = await api.uploadFile({
+        uri: media.uri,
+        name: media.name,
+        mimeType: media.mimeType
+      });
+      const story = await api.createStory({ mediaUrl: upload.url, mediaType: media.mediaType, caption: storyCaption, mentionUserId: storyMentionUser?.id, allowComments: !storyCommentsOff, durationMs: media.durationMs });
         setStories(current => ({ loading: false, data: [story, ...current.data.filter(item => item.id !== story.id)] }));
         setStoryCaption('');
+        setStoryMedia(null);
         setStoryMentionSearch('');
         setStoryMentionResults([]);
         setStoryMentionUser(null);
         setStoryCommentsOff(false);
         setShowStoryCreate(false);
         notify('success', 'Story posted to friends.');
-      })
-      .catch(error => notify('error', error.message));
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : 'Could not post story.');
+    } finally {
+      setStoryUploading(false);
+    }
   }
 
   async function searchStoryMentions(value: string) {
@@ -809,9 +828,11 @@ function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'erro
               <View style={[styles.inlineSwitch, storyCommentsOff && styles.inlineSwitchOn]}><View style={[styles.inlineSwitchKnob, storyCommentsOff && styles.inlineSwitchKnobOn]} /></View>
             </Pressable>
             <Text style={styles.muted}>Videos must be 1 minute or shorter. Friends will be notified when you post.</Text>
+            {storyMedia ? <View style={styles.storySelectedMedia}><Ionicons name={storyMedia.mediaType === 'video' ? 'videocam' : 'image'} size={18} color="#E6C07A" /><Text style={styles.body} numberOfLines={1}>{storyMedia.name}</Text></View> : null}
             <View style={styles.ticketActions}>
               <SecondaryButton label="Cancel" icon="close" onPress={() => setShowStoryCreate(false)} />
-              <PrimaryButton label="Upload" icon="cloud-upload" onPress={createStory} />
+              <SecondaryButton label="Choose Media" icon="images" onPress={chooseStoryMedia} />
+              <PrimaryButton label={storyUploading ? 'Uploading...' : 'Done'} icon="checkmark" busy={storyUploading} onPress={createStory} />
             </View>
           </View>
         </View>
@@ -1090,6 +1111,19 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
         setProfileUser(null);
         return true;
       }
+      if (showUploadSheet) {
+        setShowUploadSheet(false);
+        return true;
+      }
+      if (showEmoji || showGif) {
+        setShowEmoji(false);
+        setShowGif(false);
+        return true;
+      }
+      if (pinnedOnly) {
+        setPinnedOnly(false);
+        return true;
+      }
       if (selected) {
         setSelected(null);
         return true;
@@ -1097,7 +1131,7 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
       return false;
     });
     return () => subscription.remove();
-  }, [selected?.id, profileUser?.id, editingMessage?.id]);
+  }, [selected?.id, profileUser?.id, editingMessage?.id, showUploadSheet, showEmoji, showGif, pinnedOnly]);
 
   useEffect(() => {
     if (!selected) return;
@@ -3267,6 +3301,7 @@ const styles = StyleSheet.create({
   storyCommentComposer: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
   storyMentionList: { maxHeight: 170, marginTop: 6 },
   storyToggleRow: { minHeight: 58, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(218,226,202,.14)', backgroundColor: 'rgba(255,255,255,.04)', paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10 },
+  storySelectedMedia: { minHeight: 44, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(230,192,122,.24)', backgroundColor: 'rgba(230,192,122,.08)', paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
   announcementCard: { flexDirection: 'row', gap: 14, alignItems: 'flex-start', borderColor: 'rgba(230,192,122,.2)', borderWidth: 1.5 },
   announcementIcon: { width: 42, height: 42, borderRadius: 8, backgroundColor: 'rgba(230,192,122,.14)', alignItems: 'center', justifyContent: 'center' },
   manageRow: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 12, borderTopWidth: 1, borderTopColor: 'rgba(218,226,202,.09)', paddingTop: 12, marginTop: 12 },

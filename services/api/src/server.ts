@@ -1061,7 +1061,7 @@ app.get('/users/search', async request => {
        ) as is_friend
      from users u
      where u.id<>$2
-       and (u.username ilike '%' || $1 || '%' or u.display_name ilike '%' || $1 || '%' or (u.username || '#' || u.discriminator) ilike '%' || $1 || '%')
+       and (u.username ilike $1 || '%' or u.display_name ilike $1 || '%' or (u.username || '#' || u.discriminator) ilike $1 || '%')
      order by is_friend desc, u.display_name asc
      limit 20`,
     [query.q, request.auth!.id]
