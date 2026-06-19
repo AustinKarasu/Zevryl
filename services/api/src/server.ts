@@ -459,7 +459,7 @@ app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
 
 app.addHook('preHandler', async request => {
   const url = request.routeOptions.url ?? '';
-  if (url.startsWith('/auth/') || url === '/health') return;
+  if (url.startsWith('/auth/') || url === '/health' || url === '/app/latest') return;
   await requireAuth(request);
 });
 
