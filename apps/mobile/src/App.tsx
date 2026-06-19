@@ -1335,12 +1335,12 @@ function ProfileScreen({ user, setUser, notify }: { user: User; setUser: (user: 
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
+      {user.customStatus ? <CustomStatusBanner text={user.customStatus} /> : null}
       <GlassCard style={[styles.profileHero, { borderColor: accent, backgroundColor: `${accent}22` }]}>
         {user.bannerUrl ? <Image source={{ uri: user.bannerUrl }} style={styles.profileBannerImage} resizeMode="cover" /> : <View style={[styles.profileBanner, { backgroundColor: accent }]} />}
         <View>
           <Image source={user.avatarUrl ? { uri: user.avatarUrl } : logo} style={[styles.profileLogo, { borderColor: accent }]} />
           <View style={[styles.statusDot, { backgroundColor: presenceMeta[user.presence].color }]} />
-          {user.customStatus ? <View style={styles.profileStatusBubble}><Text style={styles.profileStatusText}>{user.customStatus}</Text></View> : null}
         </View>
         <Text style={styles.profileName}>{user.displayName}</Text>
         <Text style={styles.muted}>@{user.tag || user.username}</Text>
@@ -1363,10 +1363,6 @@ function ProfileScreen({ user, setUser, notify }: { user: User; setUser: (user: 
           <Text style={styles.cardTitle}>Biography</Text>
           <RichText text={user.bio || 'No bio yet.'} />
         </GlassCard>
-      )}
-      
-      {user.customStatus && (
-        <FeatureCard title="Status" body={user.customStatus} icon="radio" />
       )}
       
       <GlassCard>
@@ -1923,8 +1919,24 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
   const [roleMenuOpen, setRoleMenuOpen] = useState(false);
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
 
+  const loadAlertFlags = async (q = alertSearch) => {
+    try {
+      const next = await api.adminAlerts(q);
+      setAlerts(next);
+      return next;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Alerts could not load.';
+      if (/route .*not found|not found/i.test(message)) {
+        setAlerts([]);
+        notify('info', 'Alerts endpoint is not available on this API yet. Deploy the latest backend to enable flags.');
+        return [];
+      }
+      throw error;
+    }
+  };
+
   const load = async () => {
-    const [nextStats, nextAnnouncements, nextBlogs, nextBadges, nextRoles, nextUsers, nextLogs, nextAnalytics, nextAlerts] = await Promise.allSettled([api.adminStats(), api.adminAnnouncements(), api.blogs(), api.badgeCatalog(), api.roles(), api.adminUsers({ q: adminUserSearch, page: adminUserPage, limit: 10 }), api.auditLogs(), api.adminAnalytics(), api.adminAlerts(alertSearch)]);
+    const [nextStats, nextAnnouncements, nextBlogs, nextBadges, nextRoles, nextUsers, nextLogs, nextAnalytics, nextAlerts] = await Promise.allSettled([api.adminStats(), api.adminAnnouncements(), api.blogs(), api.badgeCatalog(), api.roles(), api.adminUsers({ q: adminUserSearch, page: adminUserPage, limit: 10 }), api.auditLogs(), api.adminAnalytics(), loadAlertFlags(alertSearch)]);
     if (nextStats.status === 'fulfilled') setStats(nextStats.value);
     if (nextAnnouncements.status === 'fulfilled') setAdminAnnouncements(nextAnnouncements.value);
     if (nextBlogs.status === 'fulfilled') setAdminBlogs(nextBlogs.value);
@@ -1990,8 +2002,7 @@ function AdminScreen({ setAnnouncement, setShowAnnouncement, setTab, notify }: {
   }
 
   async function searchAlerts() {
-    await api.adminAlerts(alertSearch)
-      .then(setAlerts)
+    await loadAlertFlags(alertSearch)
       .catch(error => notify('error', error.message));
   }
 
@@ -2785,11 +2796,11 @@ function ProfileSheet({
       <View style={styles.sheetBackdrop}>
         <View style={[styles.profileSheet, { borderColor: theme.color }]}>
           <ScrollView contentContainerStyle={styles.profileSheetContent} keyboardShouldPersistTaps="handled">
+            {user.customStatus ? <CustomStatusBanner text={user.customStatus} compact /> : null}
             {user.bannerUrl ? <Image source={{ uri: user.bannerUrl }} style={styles.sheetBanner} resizeMode="cover" /> : <View style={[styles.sheetBanner, { backgroundColor: user.profileColor || theme.color }]} />}
             <View style={styles.sheetHeader}>
               <View>
                 <Image source={user.avatarUrl ? { uri: user.avatarUrl } : logo} style={styles.sheetAvatar} />
-                {user.customStatus ? <View style={styles.sheetStatusBubble}><Text style={styles.profileStatusText}>{user.customStatus}</Text></View> : null}
               </View>
               <View style={styles.flex}>
                 <Text style={styles.profileName}>{user.displayName}</Text>
@@ -2835,6 +2846,17 @@ function openLink(url?: string) {
   if (!url) return;
   const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`;
   Linking.openURL(normalized).catch(() => undefined);
+}
+
+function CustomStatusBanner({ text, compact = false }: { text: string; compact?: boolean }) {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  return (
+    <View style={[styles.customStatusBanner, compact && styles.customStatusBannerCompact]}>
+      <Ionicons name="chatbubble-ellipses" size={compact ? 13 : 15} color="#E6C07A" />
+      <Text style={styles.customStatusBannerText} numberOfLines={3}>{trimmed}</Text>
+    </View>
+  );
 }
 
 async function shareTextFile(filename: string, contents: string, notify: (tone: NoticeTone, text: string) => void) {
@@ -3240,9 +3262,9 @@ const styles = StyleSheet.create({
   profileAvatarText: { color: '#F4F0E6', fontWeight: '900', fontSize: 36 },
   profileLogo: { width: 96, height: 96, borderRadius: 20, borderWidth: 3, borderColor: '#1B241C' },
   statusDot: { position: 'absolute', width: 18, height: 18, borderRadius: 9, right: 1, bottom: 5, borderWidth: 3, borderColor: '#1B241C' },
-  profileStatusBubble: { position: 'absolute', left: 82, top: 28, minHeight: 28, maxWidth: 176, borderRadius: 14, backgroundColor: 'rgba(63,63,70,.94)', borderWidth: 1, borderColor: 'rgba(255,255,255,.08)', paddingHorizontal: 10, paddingVertical: 4, alignItems: 'center', justifyContent: 'center', zIndex: 4 },
-  sheetStatusBubble: { position: 'absolute', left: 58, top: 20, minHeight: 26, maxWidth: 162, borderRadius: 13, backgroundColor: 'rgba(63,63,70,.94)', borderWidth: 1, borderColor: 'rgba(255,255,255,.08)', paddingHorizontal: 9, paddingVertical: 4, alignItems: 'center', justifyContent: 'center', zIndex: 4 },
-  profileStatusText: { color: '#F4F0E6', fontSize: 12, fontWeight: '800' },
+  customStatusBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(230,192,122,.24)', backgroundColor: 'rgba(63,63,70,.78)', paddingHorizontal: 12, paddingVertical: 9, marginBottom: 10 },
+  customStatusBannerCompact: { marginBottom: 4, paddingHorizontal: 10, paddingVertical: 8 },
+  customStatusBannerText: { color: '#F4F0E6', fontSize: 12, lineHeight: 17, fontWeight: '800', flex: 1 },
   profileName: { color: '#F4F0E6', fontSize: 28, fontWeight: '900', letterSpacing: -0.3 },
   profileBadgeContainer: { flexDirection: 'row', gap: 10, marginTop: 8 },
   colorRow: { flexDirection: 'row', gap: 12, marginTop: 12 },
