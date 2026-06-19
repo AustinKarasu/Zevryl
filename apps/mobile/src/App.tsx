@@ -78,7 +78,7 @@ type Loadable<T> = { loading: boolean; data: T; error?: string };
 type NoticeTone = 'error' | 'success' | 'info';
 type Notice = { tone: NoticeTone; text: string } | null;
 type BootCache = { user: User | null; announcement: Announcement | null; savedAt: number };
-type CallState = { kind: 'voice' | 'video'; roomName: string; url?: string; token?: string; joined: boolean; muted: boolean; deafened: boolean };
+type CallState = { kind: 'voice' | 'video'; roomName: string; url?: string; token?: string; joined: boolean; muted: boolean; deafened: boolean; videoEnabled: boolean; cameraFacing: 'front' | 'back' };
 
 function recoveryDeliveryMessage(result: unknown) {
   const delivery = typeof result === 'object' && result ? (result as { delivery?: string }).delivery : undefined;
@@ -287,6 +287,7 @@ function Root() {
   const [showUpdate, setShowUpdate] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [pendingConversationId, setPendingConversationId] = useState<string | undefined>();
+  const [chatFullscreen, setChatFullscreen] = useState(false);
   const insets = useSafeAreaInsets();
 
   const showNotice = (tone: NoticeTone, text: string) => {
@@ -382,6 +383,12 @@ function Root() {
         vibrationPattern: [0, 250, 250, 250],
         lightColor: '#E6C07A'
       }).catch(() => undefined);
+      Notifications.setNotificationChannelAsync('messages', {
+        name: 'Messages',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 180, 120, 180],
+        lightColor: '#E6C07A'
+      }).catch(() => undefined);
     }
     const projectId = Constants.easConfig?.projectId || Constants.expoConfig?.extra?.eas?.projectId;
     Notifications.requestPermissionsAsync()
@@ -416,7 +423,7 @@ function Root() {
   return (
     <TerraShell theme={user.profileTheme} accent={user.profileColor}>
       <SafeAreaView style={styles.app}>
-        <Header user={user} setTab={setTab} />
+        {!chatFullscreen ? <Header user={user} setTab={setTab} /> : null}
         <View style={styles.content}>
           {renderTab(tab, user, {
             setUser,
@@ -425,11 +432,12 @@ function Root() {
             setTab,
             notify: showNotice,
             setPendingConversationId,
-            pendingConversationId
+            pendingConversationId,
+            setChatFullscreen
           })}
         </View>
         <NoticeFooter notice={notice} bottom={insets.bottom + 94} />
-        <BottomNav tab={tab} setTab={setTab} bottom={Math.max(insets.bottom + 18, 34)} />
+        {!chatFullscreen ? <BottomNav tab={tab} setTab={setTab} bottom={Math.max(insets.bottom + 18, 34)} /> : null}
         <AnnouncementModal
           announcement={announcement}
           visible={showAnnouncement}
@@ -458,6 +466,7 @@ function renderTab(
     notify: (tone: 'error' | 'success' | 'info', text: string) => void;
     setPendingConversationId: (id: string | undefined) => void;
     pendingConversationId?: string;
+    setChatFullscreen: (value: boolean) => void;
   }
 ) {
   if (tab === 'admin' && user.role !== 'admin') return <LockedScreen title="Admin only" />;
@@ -465,7 +474,7 @@ function renderTab(
   if (tab === 'home') return <HomeScreen user={user} notify={tools.notify} setTab={tools.setTab} />;
   if (tab === 'friends') return <FriendsScreen notify={tools.notify} setTab={tools.setTab} />;
   if (tab === 'groups') return <GroupsScreen user={user} notify={tools.notify} setTab={tools.setTab} openConversation={tools.setPendingConversationId} />;
-  if (tab === 'chats') return <ChatScreen user={user} notify={tools.notify} initialConversationId={tools.pendingConversationId} />;
+  if (tab === 'chats') return <ChatScreen user={user} notify={tools.notify} initialConversationId={tools.pendingConversationId} setFullscreen={tools.setChatFullscreen} />;
   if (tab === 'profile') return <ProfileScreen user={user} setUser={tools.setUser} notify={tools.notify} />;
   if (tab === 'settings') return <SettingsScreen user={user} setTab={tools.setTab} setUser={tools.setUser} notify={tools.notify} />;
   if (tab === 'tickets') return <TicketCenterScreen user={user} notify={tools.notify} />;
@@ -655,6 +664,7 @@ function FriendsScreen({ notify, setTab }: { notify: (tone: 'error' | 'success' 
   const [state, setState] = useState<Loadable<FriendState>>({ loading: true, data: emptyFriends });
   const [username, setUsername] = useState('');
   const [profileUser, setProfileUser] = useState<User | null>(null);
+  const [profileCanUnfriend, setProfileCanUnfriend] = useState(false);
   const [reportReason, setReportReason] = useState('');
   const [reportProof, setReportProof] = useState('');
 
@@ -675,8 +685,8 @@ function FriendsScreen({ notify, setTab }: { notify: (tone: 'error' | 'success' 
     ]);
   }
 
-  async function friendControl(friend: User, control: 'mute' | 'unmute' | 'block') {
-    await api.friendAction(friend.id, control)
+  async function friendControl(friend: User, control: 'mute' | 'unmute' | 'block', hours?: number) {
+    await api.friendAction(friend.id, control, { hours })
       .then(() => notify('success', control === 'block' ? 'Friend blocked.' : control === 'mute' ? 'Friend muted.' : 'Friend unmuted.'))
       .catch(error => notify('error', error.message));
     load();
@@ -707,7 +717,7 @@ function FriendsScreen({ notify, setTab }: { notify: (tone: 'error' | 'success' 
       {state.loading ? <LoadingState /> : state.error ? <ErrorState message={state.error} onRetry={load} /> : null}
       <UserList title="Friends" users={state.data.friends} empty="Add a friend to start a DM." right={(friend) => (
         <View style={styles.rowActions}>
-          <IconButton icon="person-circle" onPress={() => setProfileUser(friend)} />
+          <IconButton icon="person-circle" onPress={() => { setProfileCanUnfriend(true); setProfileUser(friend); }} />
           <IconButton icon="chatbubble" onPress={() => messageUser(friend)} />
           <IconButton icon="notifications-off" onPress={() => friendControl(friend, 'mute')} />
           <IconButton icon="volume-high" onPress={() => friendControl(friend, 'unmute')} />
@@ -715,8 +725,8 @@ function FriendsScreen({ notify, setTab }: { notify: (tone: 'error' | 'success' 
           <IconButton icon="close" onPress={() => confirmRemove(friend)} />
         </View>
       )} />
-      <RequestList title="Incoming Requests" requests={state.data.incoming} person="from" onProfile={setProfileUser} accept={id => action(api.acceptFriend(id), 'Request accepted.')} deny={id => action(api.denyFriend(id), 'Request denied.')} />
-      <RequestList title="Outgoing Requests" requests={state.data.outgoing} person="to" onProfile={setProfileUser} cancel={id => action(api.cancelFriendRequest(id), 'Request canceled.')} />
+      <RequestList title="Incoming Requests" requests={state.data.incoming} person="from" onProfile={(target) => { setProfileCanUnfriend(false); setProfileUser(target); }} accept={id => action(api.acceptFriend(id), 'Request accepted.')} deny={id => action(api.denyFriend(id), 'Request denied.')} />
+      <RequestList title="Outgoing Requests" requests={state.data.outgoing} person="to" onProfile={(target) => { setProfileCanUnfriend(false); setProfileUser(target); }} cancel={id => action(api.cancelFriendRequest(id), 'Request canceled.')} />
       <ProfileSheet
         user={profileUser}
         reportReason={reportReason}
@@ -725,11 +735,12 @@ function FriendsScreen({ notify, setTab }: { notify: (tone: 'error' | 'success' 
         setReportProof={setReportProof}
         onClose={() => setProfileUser(null)}
         onMessage={messageUser}
-        onMute={(control) => {
+        canUnfriend={profileCanUnfriend}
+        onMute={(control, hours) => {
           if (!profileUser) return;
           if (control === 'block') void friendControl(profileUser, 'block');
           else if (control === 'unfriend') void action(api.removeFriend(profileUser.id), 'Friend removed.');
-          else void friendControl(profileUser, 'mute');
+          else void friendControl(profileUser, 'mute', hours);
         }}
         onReport={reportUser}
       />
@@ -835,7 +846,7 @@ function GroupsScreen({ user, notify, setTab, openConversation }: { user: User; 
   );
 }
 
-function ChatScreen({ user, notify, initialConversationId }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void; initialConversationId?: string }) {
+function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void; initialConversationId?: string; setFullscreen: (value: boolean) => void }) {
   const [conversations, setConversations] = useState<Loadable<Conversation[]>>({ loading: true, data: [] });
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -867,6 +878,11 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
     })
     .catch(error => { setConversations({ loading: false, data: [], error: error.message }); notify('error', error.message); });
   useEffect(() => { loadConversations(); }, []);
+
+  useEffect(() => {
+    setFullscreen(Boolean(selected));
+    return () => setFullscreen(false);
+  }, [selected?.id]);
 
   useEffect(() => {
     if (!selected) return;
@@ -988,7 +1004,7 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
     if (!selected) return;
     await api.callToken(`${kind}-${selected.id}`)
       .then(result => {
-        setActiveCall({ kind, roomName: result.roomName, url: result.url, token: result.token, joined: false, muted: false, deafened: false });
+        setActiveCall({ kind, roomName: result.roomName, url: result.url, token: result.token, joined: false, muted: false, deafened: false, videoEnabled: kind === 'video', cameraFacing: 'front' });
         Vibration.vibrate(kind === 'voice' ? [0, 500, 450, 500] : [0, 220, 160, 220, 160, 220], true);
         if (callVibrationTimer.current) clearTimeout(callVibrationTimer.current);
         callVibrationTimer.current = setTimeout(() => Vibration.cancel(), 30000);
@@ -1118,7 +1134,7 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
             <TextInput style={styles.composerInput} placeholder="Message" placeholderTextColor="#899486" value={body} onChangeText={updateBody} multiline />
             <IconButton icon="send" onPress={() => send()} />
           </View>
-          <ProfileSheet user={profileUser} currentUser={user} reportReason={reportReason} reportProof={reportProof} setReportReason={setReportReason} setReportProof={setReportProof} onClose={() => setProfileUser(null)} onMute={dmAction} onReport={submitReport} />
+          <ProfileSheet user={profileUser} currentUser={user} reportReason={reportReason} reportProof={reportProof} setReportReason={setReportReason} setReportProof={setReportProof} onClose={() => setProfileUser(null)} canUnfriend={selected.kind === 'dm'} onMute={dmAction} onReport={submitReport} />
           <CallSheet
             call={activeCall}
             conversation={selected}
@@ -1127,6 +1143,8 @@ function ChatScreen({ user, notify, initialConversationId }: { user: User; notif
             onLeave={leaveActiveCall}
             onToggleMute={() => setActiveCall(call => call ? { ...call, muted: !call.muted } : call)}
             onToggleDeafen={() => setActiveCall(call => call ? { ...call, deafened: !call.deafened, muted: !call.deafened ? true : call.muted } : call)}
+            onToggleVideo={() => setActiveCall(call => call ? { ...call, videoEnabled: !call.videoEnabled } : call)}
+            onFlipCamera={() => setActiveCall(call => call ? { ...call, cameraFacing: call.cameraFacing === 'front' ? 'back' : 'front' } : call)}
           />
           <MemberSheet visible={showMembers} conversation={selected} onClose={() => setShowMembers(false)} />
         </View>
@@ -2295,7 +2313,7 @@ function StatusPill({ presence }: { presence: User['presence'] }) {
 
 function BadgeChip({ badge }: { badge: string }) {
   const [visible, setVisible] = useState(false);
-  return <><Pressable onPress={() => setVisible(true)} style={styles.badgeChip}><Ionicons name={badgeIcons[badge] || 'ribbon'} size={12} color="#E6C07A" /><Text style={styles.badgeChipText}>{badge}</Text></Pressable><BadgeToast badge={badge} visible={visible} onClose={() => setVisible(false)} /></>;
+  return <><Pressable onPress={() => setVisible(true)} style={styles.badgeChip}><Ionicons name={badgeIcons[badge] || 'ribbon'} size={14} color="#E6C07A" /></Pressable><BadgeToast badge={badge} visible={visible} onClose={() => setVisible(false)} /></>;
 }
 
 function BadgeIcon({ badge }: { badge: string }) {
@@ -2331,7 +2349,9 @@ function CallSheet({
   onJoin,
   onLeave,
   onToggleMute,
-  onToggleDeafen
+  onToggleDeafen,
+  onToggleVideo,
+  onFlipCamera
 }: {
   call: CallState | null;
   conversation: Conversation | null;
@@ -2340,6 +2360,8 @@ function CallSheet({
   onLeave: () => void;
   onToggleMute: () => void;
   onToggleDeafen: () => void;
+  onToggleVideo: () => void;
+  onFlipCamera: () => void;
 }) {
   if (!call || !conversation) return null;
   const title = call.kind === 'voice' ? 'Voice Call' : 'Video Call';
@@ -2356,18 +2378,22 @@ function CallSheet({
           <Text style={styles.muted}>{conversation.title}</Text>
           <View style={styles.callStatusPanel}>
             <Ionicons name={call.kind === 'voice' ? 'call' : 'videocam'} size={30} color="#E6C07A" />
-            <Text style={styles.heroSmall}>{call.joined ? 'Connected' : 'Invite Sent'}</Text>
+            <Text style={styles.heroSmall}>{call.joined ? 'In VC' : 'Invite Sent'}</Text>
             <Text style={styles.muted}>{connectedCount} connected - {possibleMembers} member{possibleMembers === 1 ? '' : 's'} can join</Text>
             {call.joined ? <Text style={styles.meta}>{call.muted ? 'Muted' : 'Mic on'} - {call.deafened ? 'Deafened' : 'Audio on'}</Text> : null}
           </View>
           {call.joined && call.url && call.token ? <CallMediaRoom call={call} onLeave={onLeave} /> : null}
           <View style={styles.memberListCompact}>
             {conversation.participants.map(member => (
-              <View key={member.id} style={styles.memberPick}>
+              <View key={member.id} style={styles.callMemberRow}>
                 <UserAvatar user={member} size={34} />
                 <View style={styles.flex}>
-                  <Text style={styles.body}>{member.displayName}</Text>
-                  <Text style={styles.meta}>{call.joined && member.id === currentUser.id ? 'Connected' : 'Invited'}</Text>
+                  <View style={styles.callMemberNameRow}>
+                    <Text style={styles.body}>{member.displayName}</Text>
+                    {call.joined && member.id === currentUser.id && call.muted ? <Ionicons name="mic-off" size={15} color="#FFAAA8" /> : null}
+                    {call.joined && member.id === currentUser.id && call.deafened ? <Ionicons name="volume-mute" size={15} color="#FFAAA8" /> : null}
+                  </View>
+                  <Text style={styles.meta}>{call.joined && member.id === currentUser.id ? 'In VC' : 'Invited'}</Text>
                 </View>
                 <StatusPill presence={member.presence} />
               </View>
@@ -2383,6 +2409,18 @@ function CallSheet({
                 <Ionicons name={call.deafened ? 'volume-mute' : 'volume-high'} size={20} color="#F4F0E6" />
                 <Text style={styles.callControlText}>{call.deafened ? 'Deafened' : 'Deafen'}</Text>
               </Pressable>
+              {call.kind === 'video' ? (
+                <Pressable style={[styles.callControlButton, !call.videoEnabled && styles.callControlActive]} onPress={onToggleVideo}>
+                  <Ionicons name={call.videoEnabled ? 'videocam' : 'videocam-off'} size={20} color="#F4F0E6" />
+                  <Text style={styles.callControlText}>{call.videoEnabled ? 'Video On' : 'Video Off'}</Text>
+                </Pressable>
+              ) : null}
+              {call.kind === 'video' ? (
+                <Pressable style={styles.callControlButton} onPress={onFlipCamera}>
+                  <Ionicons name="camera-reverse" size={20} color="#F4F0E6" />
+                  <Text style={styles.callControlText}>{call.cameraFacing === 'front' ? 'Front' : 'Back'}</Text>
+                </Pressable>
+              ) : null}
               <Pressable style={[styles.callControlButton, styles.callLeaveButton]} onPress={onLeave}>
                 <Ionicons name="call" size={20} color="#fff" />
                 <Text style={styles.callControlText}>Leave</Text>
@@ -2393,7 +2431,7 @@ function CallSheet({
             {!call.joined ? <PrimaryButton label="Join Call" icon={call.kind === 'voice' ? 'call' : 'videocam'} onPress={onJoin} /> : null}
             <SecondaryButton label={call.joined ? 'Leave Call' : 'Cancel'} icon="close" onPress={onLeave} />
           </View>
-          {!call.url || !call.token ? <Text style={styles.meta}>Media server is not configured yet. Invites and call controls still work.</Text> : null}
+          {!call.url || !call.token ? <Text style={styles.errorText}>LiveKit is missing on the backend. Set LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET on the API server.</Text> : null}
         </View>
       </View>
     </Modal>
@@ -2406,8 +2444,8 @@ function CallMediaRoom({ call, onLeave }: { call: CallState; onLeave: () => void
       serverUrl={call.url}
       token={call.token}
       connect={call.joined}
-      audio={!call.muted}
-      video={call.kind === 'video'}
+      audio={!call.muted && !call.deafened}
+      video={call.kind === 'video' && call.videoEnabled}
       options={{ adaptiveStream: { pixelDensity: 'screen' } }}
       onDisconnected={onLeave}
     >
@@ -2472,6 +2510,7 @@ function ProfileSheet({
   setReportProof,
   onClose,
   onMessage,
+  canUnfriend = false,
   onMute,
   onReport
 }: {
@@ -2483,13 +2522,23 @@ function ProfileSheet({
   setReportProof: (value: string) => void;
   onClose: () => void;
   onMessage?: (user: User) => void;
+  canUnfriend?: boolean;
   onMute: (action: 'mute' | 'block' | 'unfriend', hours?: number) => void;
   onReport: () => void;
 }) {
   const [showReport, setShowReport] = useState(false);
+  const [muteMenuOpen, setMuteMenuOpen] = useState(false);
   if (!user) return null;
   const own = currentUser ? user.id === currentUser.id : false;
   const theme = profileThemes[user.profileTheme || 'terria'];
+  async function pickReportProof() {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) return;
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, quality: 0.74, base64: true });
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    setReportProof(asset.base64 ? `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}` : asset.uri);
+  }
   return (
     <Modal visible transparent animationType="slide">
       <View style={styles.sheetBackdrop}>
@@ -2499,7 +2548,7 @@ function ProfileSheet({
             <View style={styles.sheetHeader}>
               <View>
                 <Image source={user.avatarUrl ? { uri: user.avatarUrl } : logo} style={styles.sheetAvatar} />
-                {user.customStatus ? <View style={styles.profileStatusBubble}><Text style={styles.profileStatusText}>{user.customStatus}</Text></View> : null}
+                {user.customStatus ? <View style={styles.sheetStatusBubble}><Text style={styles.profileStatusText}>{user.customStatus}</Text></View> : null}
               </View>
               <View style={styles.flex}>
                 <Text style={styles.profileName}>{user.displayName}</Text>
@@ -2511,20 +2560,27 @@ function ProfileSheet({
             <RichText text={user.bio || 'No bio yet.'} />
             {!own && (
               <>
-                <View style={styles.mediaActions}>
+                <View style={styles.profileActionGrid}>
                   {onMessage ? <SecondaryButton label="Message" icon="chatbubble" onPress={() => onMessage(user)} /> : null}
                   <SecondaryButton label="Report" icon="flag" onPress={() => setShowReport(true)} />
                   <SecondaryButton label="Block" icon="ban" onPress={() => onMute('block')} />
+                  <SecondaryButton label="Mute" icon="notifications-off" onPress={() => setMuteMenuOpen(true)} />
+                  {canUnfriend ? <SecondaryButton label="Unfriend" icon="person-remove" onPress={() => onMute('unfriend')} /> : null}
                 </View>
-                <View style={styles.segment}>
-                  <Pressable style={styles.segmentItem} onPress={() => onMute('mute', 1)}><Text style={styles.segmentText}>Mute 1h</Text></Pressable>
-                  <Pressable style={styles.segmentItem} onPress={() => onMute('mute', 24)}><Text style={styles.segmentText}>Mute 1d</Text></Pressable>
-                  <Pressable style={styles.segmentItem} onPress={() => onMute('mute', 168)}><Text style={styles.segmentText}>Mute 7d</Text></Pressable>
-                </View>
-                <View style={styles.mediaActions}>
-                  <SecondaryButton label="Unfriend" icon="person-remove" onPress={() => onMute('unfriend')} />
-                </View>
-                {showReport ? <><Field icon="warning" placeholder="Report reason" value={reportReason} onChangeText={setReportReason} multiline /><Field icon="image" placeholder="Optional proof image URL/base64" value={reportProof} onChangeText={setReportProof} autoCapitalize="none" /><PrimaryButton label="Create Report Ticket" icon="flag" onPress={onReport} /></> : null}
+                <ChoiceModal visible={muteMenuOpen} title="Mute Duration" items={[{ key: '1', label: '1 hour', icon: 'time' }, { key: '8', label: '8 hours', icon: 'moon' }, { key: '24', label: '1 day', icon: 'calendar' }, { key: '168', label: '7 days', icon: 'calendar-number' }]} selected="" onChoose={(key) => { setMuteMenuOpen(false); onMute('mute', Number(key)); }} onClose={() => setMuteMenuOpen(false)} />
+                <Modal visible={showReport} transparent animationType="fade">
+                  <View style={styles.modalBackdrop}>
+                    <View style={styles.announcementModal}>
+                      <View style={styles.editorHeader}><Text style={[styles.cardTitle, { flex: 1 }]}>Report {user.displayName}</Text><IconButton icon="close" onPress={() => setShowReport(false)} /></View>
+                      <Field icon="warning" placeholder="Report reason" value={reportReason} onChangeText={setReportReason} multiline />
+                      <Pressable style={styles.proofUpload} onPress={pickReportProof}>
+                        <Ionicons name={reportProof ? 'image' : 'cloud-upload'} size={20} color="#E6C07A" />
+                        <Text style={styles.body}>{reportProof ? 'Proof image selected' : 'Upload proof image'}</Text>
+                      </Pressable>
+                      <PrimaryButton label="Create Report Ticket" icon="flag" onPress={() => { setShowReport(false); onReport(); }} />
+                    </View>
+                  </View>
+                </Modal>
               </>
             )}
           </ScrollView>
@@ -2690,7 +2746,7 @@ function RequestList({
       {requests.length === 0 ? <Text style={styles.muted}>None</Text> : requests.map(req => {
         const visibleUser = person === 'to' ? req.toUser : req.fromUser;
         return (
-          <GlassCard key={req.id} style={styles.userRow}>
+          <GlassCard key={req.id} style={styles.requestCard}>
             <Pressable onPress={() => onProfile?.(visibleUser)} style={styles.userRowTop}>
               <UserAvatar user={visibleUser} />
               <View style={styles.flex}>
@@ -2698,10 +2754,13 @@ function RequestList({
                 <Text style={styles.muted}>@{visibleUser.tag || visibleUser.username}</Text>
                 <Text style={styles.muted}>{req.status}</Text>
               </View>
+              <Ionicons name="person-circle" size={22} color="#E6C07A" />
             </Pressable>
-            {accept && <IconButton icon="checkmark" onPress={() => accept(req.id)} />}
-            {deny && <IconButton icon="close" onPress={() => deny(req.id)} />}
-            {cancel && <IconButton icon="trash" onPress={() => cancel(req.id)} />}
+            <View style={styles.requestActions}>
+              {accept && <SecondaryButton label="Accept" icon="checkmark" onPress={() => accept(req.id)} />}
+              {deny && <SecondaryButton label="Deny" icon="close" onPress={() => deny(req.id)} />}
+              {cancel && <SecondaryButton label="Cancel" icon="trash" onPress={() => cancel(req.id)} />}
+            </View>
           </GlassCard>
         );
       })}
@@ -2831,7 +2890,8 @@ const styles = StyleSheet.create({
   avatarText: { color: '#F4F0E6', fontWeight: '900', fontSize: 18 },
   
   rowActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  requestActions: { flexDirection: 'row', gap: 8 },
+  requestActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12, borderTopWidth: 1, borderTopColor: 'rgba(218,226,202,.08)', paddingTop: 12 },
+  requestCard: { gap: 2 },
   userRowCard: { gap: 12 },
   userRowTop: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   userActionWrap: { borderTopWidth: 1, borderTopColor: 'rgba(218,226,202,.08)', paddingTop: 10 },
@@ -2845,7 +2905,7 @@ const styles = StyleSheet.create({
   badge: { color: '#E6C07A', fontSize: 12, fontWeight: '800', backgroundColor: 'rgba(230,192,122,.12)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, alignSelf: 'flex-start' },
   badgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
   badgeRowMini: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
-  badgeChip: { color: '#F4F0E6', backgroundColor: 'rgba(230,192,122,.14)', borderColor: 'rgba(230,192,122,.28)', borderWidth: 1, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, fontSize: 12, fontWeight: '800' },
+  badgeChip: { width: 30, height: 30, backgroundColor: 'rgba(230,192,122,.14)', borderColor: 'rgba(230,192,122,.28)', borderWidth: 1, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   badgeChipText: { color: '#F4F0E6', fontSize: 12, fontWeight: '800' },
   badgeIcon: { width: 18, height: 18, borderRadius: 6, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(230,192,122,.14)' },
   badgeMini: { color: '#E6C07A', fontSize: 11, fontWeight: '800' },
@@ -2916,14 +2976,16 @@ const styles = StyleSheet.create({
   callCard: { gap: 12, borderColor: 'rgba(255,170,168,.15)', borderWidth: 1 },
   callSheet: { width: '100%', borderRadius: 12, backgroundColor: '#182019', borderWidth: 1, borderColor: 'rgba(230,192,122,.28)', padding: 18, gap: 12 },
   callStatusPanel: { minHeight: 128, borderRadius: 12, backgroundColor: 'rgba(230,192,122,.09)', borderWidth: 1, borderColor: 'rgba(230,192,122,.18)', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  callControls: { flexDirection: 'row', gap: 8, marginTop: 8 },
-  callControlButton: { flex: 1, minHeight: 58, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(218,226,202,.14)', backgroundColor: 'rgba(255,255,255,.06)', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  callControls: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  callControlButton: { flexGrow: 1, minWidth: 96, minHeight: 58, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(218,226,202,.14)', backgroundColor: 'rgba(255,255,255,.06)', alignItems: 'center', justifyContent: 'center', gap: 5 },
   callControlActive: { backgroundColor: 'rgba(230,192,122,.18)', borderColor: 'rgba(230,192,122,.42)' },
   callLeaveButton: { backgroundColor: 'rgba(210,64,72,.72)', borderColor: 'rgba(255,170,168,.45)' },
   callControlText: { color: '#F4F0E6', fontSize: 12, fontWeight: '800' },
   audioOnlyPanel: { minHeight: 72, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(230,192,122,.22)', backgroundColor: 'rgba(230,192,122,.08)', alignItems: 'center', justifyContent: 'center', gap: 6 },
   liveKitGrid: { minHeight: 220, borderRadius: 12, overflow: 'hidden', backgroundColor: '#05070B', alignItems: 'stretch', justifyContent: 'center', gap: 8 },
   liveKitVideoTile: { width: '100%', minHeight: 220, backgroundColor: '#05070B', alignItems: 'center', justifyContent: 'center' },
+  callMemberRow: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 58, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, backgroundColor: 'rgba(255,255,255,.04)', marginTop: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,.06)' },
+  callMemberNameRow: { flexDirection: 'row', alignItems: 'center', gap: 7, flexWrap: 'wrap' },
   
   // Profile
   profileHero: { alignItems: 'center', gap: 14, paddingTop: 8, paddingVertical: 20 },
@@ -2933,12 +2995,15 @@ const styles = StyleSheet.create({
   profileAvatarText: { color: '#F4F0E6', fontWeight: '900', fontSize: 36 },
   profileLogo: { width: 96, height: 96, borderRadius: 20, borderWidth: 3, borderColor: '#1B241C' },
   statusDot: { position: 'absolute', width: 18, height: 18, borderRadius: 9, right: 1, bottom: 5, borderWidth: 3, borderColor: '#1B241C' },
-  profileStatusBubble: { position: 'absolute', left: 58, top: 26, minHeight: 38, maxWidth: 190, borderRadius: 18, backgroundColor: 'rgba(63,63,70,.94)', borderWidth: 1, borderColor: 'rgba(255,255,255,.08)', paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center', zIndex: 4 },
+  profileStatusBubble: { position: 'absolute', left: 86, top: 24, minHeight: 38, maxWidth: 190, borderRadius: 18, backgroundColor: 'rgba(63,63,70,.94)', borderWidth: 1, borderColor: 'rgba(255,255,255,.08)', paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center', zIndex: 4 },
+  sheetStatusBubble: { position: 'absolute', left: 62, top: 18, minHeight: 36, maxWidth: 180, borderRadius: 17, backgroundColor: 'rgba(63,63,70,.94)', borderWidth: 1, borderColor: 'rgba(255,255,255,.08)', paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center', zIndex: 4 },
   profileStatusText: { color: '#F4F0E6', fontSize: 15, fontWeight: '800' },
   profileName: { color: '#F4F0E6', fontSize: 28, fontWeight: '900', letterSpacing: -0.3 },
   profileBadgeContainer: { flexDirection: 'row', gap: 10, marginTop: 8 },
   colorRow: { flexDirection: 'row', gap: 12, marginTop: 12 },
   mediaActions: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  profileActionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  proofUpload: { minHeight: 52, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(230,192,122,.24)', backgroundColor: 'rgba(230,192,122,.08)', flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, marginTop: 10 },
   ticketActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
   ticketChat: { gap: 10, borderLeftWidth: 2, borderLeftColor: 'rgba(230,192,122,.24)', paddingLeft: 12, marginTop: 10 },
   ticketReply: { backgroundColor: 'rgba(255,255,255,.04)', borderRadius: 10, padding: 10, gap: 4 },

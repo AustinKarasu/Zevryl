@@ -219,8 +219,8 @@ export const api = {
   denyFriend: (id: string) => request(`/friends/requests/${id}/deny`, { method: 'POST' }),
   cancelFriendRequest: (id: string) => request(`/friends/requests/${id}`, { method: 'DELETE' }),
   removeFriend: (id: string) => request(`/friends/${id}`, { method: 'DELETE' }),
-  friendAction: (id: string, action: 'mute' | 'unmute' | 'block') =>
-    request(`/friends/${id}/${action}`, { method: 'POST' }),
+  friendAction: (id: string, action: 'mute' | 'unmute' | 'block', payload: { hours?: number } = {}) =>
+    request(`/friends/${id}/${action}`, { method: 'POST', body: JSON.stringify(payload) }),
   groups: () => request<Group[]>('/groups'),
   createGroup: (payload: { name: string; description: string; friendIds: string[]; visibility?: 'private' | 'public'; voiceLimit?: number; videoLimit?: number }) =>
     request<Group>('/groups', { method: 'POST', body: JSON.stringify(payload) }),

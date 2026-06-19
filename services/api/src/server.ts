@@ -482,6 +482,7 @@ async function notifyConversation(conversationId: string, senderId: string, body
   const messages = tokens.rows.map(row => ({
     to: row.token,
     sound: 'default',
+    channelId: 'messages',
     title: sender?.display_name ? `${sender.display_name} sent a message` : 'New Zevryl message',
     body: body.length > 140 ? `${body.slice(0, 137)}...` : body,
     data: { conversationId, kind: 'message' }
@@ -786,6 +787,7 @@ app.post('/friends/:id/block', async request => {
 
 app.post('/friends/:id/mute', async request => {
   const params = z.object({ id: uuid }).parse(request.params);
+  const body = z.object({ hours: z.number().int().min(1).max(8760).optional() }).parse(request.body ?? {});
   const conversations = await pool.query(
     `select c.id from conversations c
      join conversation_members a on a.conversation_id=c.id and a.user_id=$1
@@ -794,7 +796,7 @@ app.post('/friends/:id/mute', async request => {
     [request.auth!.id, params.id]
   );
   for (const row of conversations.rows) {
-    await pool.query('update conversation_members set muted_until=now() + interval \'8 hours\' where conversation_id=$1 and user_id=$2', [row.id, request.auth!.id]);
+    await pool.query('update conversation_members set muted_until=now() + ($3::int || \' hours\')::interval where conversation_id=$1 and user_id=$2', [row.id, request.auth!.id, body.hours ?? 8]);
   }
   return { ok: true };
 });
