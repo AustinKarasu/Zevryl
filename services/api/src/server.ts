@@ -292,6 +292,21 @@ async function migrate() {
     alter table users add column if not exists email_verified boolean not null default true;
     alter table users add column if not exists muted_until timestamptz;
     alter table sessions add column if not exists created_at timestamptz not null default now();
+    with ranked_sessions as (
+      select id,
+             row_number() over (
+               partition by user_id, coalesce(ip_address, ''), coalesce(user_agent, ''), coalesce(device_name, '')
+               order by last_seen_at desc, created_at desc
+             ) as duplicate_rank
+      from sessions
+      where revoked_at is null
+    )
+    update sessions
+       set revoked_at=now()
+     where id in (select id from ranked_sessions where duplicate_rank > 1);
+    create unique index if not exists idx_sessions_active_device_unique
+      on sessions (user_id, coalesce(ip_address, ''), coalesce(user_agent, ''), coalesce(device_name, ''))
+      where revoked_at is null;
     alter table messages add column if not exists pinned boolean not null default false;
     alter table reports add column if not exists proof_url text;
     alter table reports add column if not exists target_user_id uuid references users(id) on delete set null;
@@ -600,7 +615,31 @@ async function issueAuthSession(userRow: any, request: any) {
   const user = toUser(fresh);
   const accessToken = await sign({ id: user.id, role: user.role }, 'access');
   const refreshToken = await sign({ id: user.id, role: user.role }, 'refresh');
-  await pool.query('insert into sessions (id,user_id,refresh_token_hash,device_name,user_agent,ip_address) values ($1,$2,$3,$4,$5,$6)', [crypto.randomUUID(), user.id, await argon2.hash(refreshToken), requestDeviceName(request), request.headers['user-agent'], request.ip]);
+  const deviceName = requestDeviceName(request);
+  const userAgent = request.headers['user-agent'];
+  const refreshTokenHash = await argon2.hash(refreshToken);
+  const existing = (await pool.query(
+    `select id from sessions
+     where user_id=$1
+       and ip_address is not distinct from $2
+       and user_agent is not distinct from $3
+       and device_name is not distinct from $4
+       and revoked_at is null
+     order by last_seen_at desc, created_at desc
+     limit 1`,
+    [user.id, request.ip, userAgent, deviceName]
+  )).rows[0];
+  if (existing) {
+    await pool.query(
+      'update sessions set refresh_token_hash=$2, last_seen_at=now() where id=$1',
+      [existing.id, refreshTokenHash]
+    );
+  } else {
+    await pool.query(
+      'insert into sessions (id,user_id,refresh_token_hash,device_name,user_agent,ip_address) values ($1,$2,$3,$4,$5,$6)',
+      [crypto.randomUUID(), user.id, refreshTokenHash, deviceName, userAgent, request.ip]
+    );
+  }
   return { user, accessToken, refreshToken };
 }
 
