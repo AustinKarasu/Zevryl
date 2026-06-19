@@ -957,9 +957,9 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
       });
       const updated = await api.updateAccount({
         username: username.trim(),
-        discriminator: discriminator.trim(),
-        mobile,
-        alternateEmail
+        discriminator: discriminator.trim() || undefined,
+        mobile: mobile.trim() || undefined,
+        alternateEmail: alternateEmail.trim() || undefined
       });
       
       notify('success', 'Profile updated successfully!');

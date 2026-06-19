@@ -21,6 +21,52 @@ export class ApiError extends Error {
   }
 }
 
+function friendlyApiMessage(input: unknown, fallback = 'Something went wrong. Please try again.'): string {
+  if (!input) return fallback;
+  if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (!trimmed) return fallback;
+    try {
+      return friendlyApiMessage(JSON.parse(trimmed), fallback);
+    } catch {
+      return trimmed.length > 240 ? `${trimmed.slice(0, 237)}...` : trimmed;
+    }
+  }
+  if (Array.isArray(input)) {
+    return input.map(item => friendlyApiMessage(item, '')).filter(Boolean).join('\n') || fallback;
+  }
+  if (typeof input === 'object') {
+    const body = input as Record<string, unknown>;
+    if (typeof body.message === 'string' && body.message.trim()) return friendlyApiMessage(body.message, fallback);
+    if (typeof body.error === 'string' && body.error.trim()) return friendlyApiMessage(body.error, fallback);
+    const issues = body.issues || body.errors;
+    if (Array.isArray(issues)) {
+      const lines = issues.map(issue => {
+        if (typeof issue === 'string') return issue;
+        if (!issue || typeof issue !== 'object') return '';
+        const record = issue as Record<string, unknown>;
+        const path = Array.isArray(record.path) ? record.path.join('.') : '';
+        const message = typeof record.message === 'string' ? record.message : '';
+        return [path, message].filter(Boolean).join(': ');
+      }).filter(Boolean);
+      if (lines.length) return lines.join('\n');
+    }
+  }
+  return fallback;
+}
+
+async function responseErrorMessage(response: Response) {
+  const fallback = response.status === 401
+    ? 'Please sign in again.'
+    : response.status === 403
+      ? 'You do not have permission for this action.'
+      : response.status === 404
+        ? 'This item was not found.'
+        : 'Something went wrong. Please try again.';
+  const text = await response.text();
+  return friendlyApiMessage(text, fallback);
+}
+
 async function token() {
   return SecureStore.getItemAsync('zevryl.accessToken');
 }
@@ -62,14 +108,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (!response.ok) {
-    let message = 'Something went wrong. Please try again.';
-    try {
-      const body = await response.json();
-      message = body.message || message;
-    } catch {
-      message = await response.text() || message;
-    }
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, await responseErrorMessage(response));
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -82,9 +121,7 @@ async function requestText(path: string, init: RequestInit = {}): Promise<string
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
   const response = await fetch(`${configuredUrl}${path}`, { ...init, headers });
   if (!response.ok) {
-    let message = 'Something went wrong. Please try again.';
-    try { message = (await response.json()).message || message; } catch { message = await response.text() || message; }
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, await responseErrorMessage(response));
   }
   return response.text();
 }
