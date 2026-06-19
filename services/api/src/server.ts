@@ -21,9 +21,9 @@ const env = {
   adminEmail: process.env.BOOTSTRAP_ADMIN_EMAIL,
   adminPassword: process.env.BOOTSTRAP_ADMIN_PASSWORD
   ,
-  livekitUrl: process.env.LIVEKIT_URL ?? '',
-  livekitApiKey: process.env.LIVEKIT_API_KEY ?? '',
-  livekitApiSecret: process.env.LIVEKIT_API_SECRET ?? '',
+  livekitUrl: process.env.LIVEKIT_URL ?? process.env.EXPO_PUBLIC_LIVEKIT_URL ?? '',
+  livekitApiKey: process.env.LIVEKIT_API_KEY ?? process.env.LK_API_KEY ?? '',
+  livekitApiSecret: process.env.LIVEKIT_API_SECRET ?? process.env.LK_API_SECRET ?? '',
   publicAppUrl: process.env.PUBLIC_APP_URL ?? 'https://github.com/AustinKarasu/Zevryl/releases/latest',
   resendApiKey: process.env.RESEND_API_KEY ?? '',
   mailFrom: process.env.MAIL_FROM ?? 'Zevryl <noreply@zevryl.app>',
@@ -566,7 +566,7 @@ async function notifyCall(roomName: string, senderId: string, kind: 'voice' | 'v
     title: `${sender?.display_name ?? 'Someone'} started a ${kind} call`,
     body: `${count} member${count === 1 ? '' : 's'} can join this ${kind} call.`,
     categoryId: 'incoming-call',
-    data: { conversationId, roomName, kind: 'call' }
+    data: { conversationId, roomName, kind: 'incoming-call' }
   }));
   await fetch('https://exp.host/--/api/v2/push/send', {
     method: 'POST',
@@ -905,19 +905,33 @@ app.post('/friends/request', async request => {
 
 app.post('/friends/requests/:id/accept', async request => {
   const params = z.object({ id: uuid }).parse(request.params);
-  const req = (await pool.query('select * from friend_requests where id=$1 and to_user_id=$2 and status=$3', [params.id, request.auth!.id, 'pending'])).rows[0];
+  const req = (await pool.query(
+    `select * from friend_requests
+     where (id=$1 or from_user_id=$1) and to_user_id=$2 and status=$3
+     order by created_at desc limit 1`,
+    [params.id, request.auth!.id, 'pending']
+  )).rows[0];
   if (!req) throw app.httpErrors.notFound('Request not found.');
-  await pool.query('update friend_requests set status=$1, responded_at=now() where id=$2 and status=$3', ['accepted', params.id, 'pending']);
   await pool.query('insert into friendships (user_a,user_b) values ($1,$2) on conflict do nothing', [req.from_user_id, req.to_user_id]);
-  await audit(request.auth!.id, 'friend.accept', 'friend_request', params.id);
+  await pool.query('update friend_requests set status=$1, responded_at=now() where id=$2 and status=$3', ['accepted', req.id, 'pending']);
+  await audit(request.auth!.id, 'friend.accept', 'friend_request', req.id);
   return { ok: true };
 });
 
 app.post('/friends/requests/:id/deny', async request => {
   const params = z.object({ id: uuid }).parse(request.params);
-  const row = (await pool.query('update friend_requests set status=$1, responded_at=now() where id=$2 and to_user_id=$3 and status=$4 returning id', ['denied', params.id, request.auth!.id, 'pending'])).rows[0];
+  const row = (await pool.query(
+    `update friend_requests set status=$1, responded_at=now()
+     where id=(
+       select id from friend_requests
+       where (id=$2 or from_user_id=$2) and to_user_id=$3 and status=$4
+       order by created_at desc limit 1
+     )
+     returning id`,
+    ['denied', params.id, request.auth!.id, 'pending']
+  )).rows[0];
   if (!row) throw app.httpErrors.notFound('Request not found.');
-  await audit(request.auth!.id, 'friend.deny', 'friend_request', params.id);
+  await audit(request.auth!.id, 'friend.deny', 'friend_request', row.id);
   return { ok: true };
 });
 
@@ -1221,7 +1235,7 @@ app.get('/typing/:conversationId', async request => {
 });
 
 app.post('/calls/token', async request => {
-  const body = z.object({ roomName: z.string().min(1), canPublish: z.boolean().default(true), canSubscribe: z.boolean().default(true) }).parse(request.body);
+  const body = z.object({ roomName: z.string().min(1), canPublish: z.boolean().default(true), canSubscribe: z.boolean().default(true), notify: z.boolean().default(true) }).parse(request.body);
   const kind = body.roomName.startsWith('video-') ? 'video' : 'voice';
   const conversationId = body.roomName.replace(/^(voice|video)-/, '');
   const group = (await pool.query(`select g.* from groups g join conversations c on c.group_id=g.id where c.id=$1`, [conversationId])).rows[0];
@@ -1230,10 +1244,9 @@ app.post('/calls/token', async request => {
     const limit = kind === 'video' ? group.video_limit : group.voice_limit;
     if (memberCount > limit) throw app.httpErrors.forbidden(`${kind === 'video' ? 'Video' : 'Voice'} call limit is ${limit} members for this group.`);
   }
-  await notifyCall(body.roomName, request.auth!.id, kind);
   if (!env.livekitApiKey || !env.livekitApiSecret || !env.livekitUrl) {
-    await audit(request.auth!.id, 'call.notify', 'room', body.roomName);
-    return { url: '', token: '', roomName: body.roomName };
+    await audit(request.auth!.id, 'call.livekit_missing', 'room', body.roomName);
+    throw app.httpErrors.serviceUnavailable('LiveKit is not configured on the API server. Set LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET, then restart the API.');
   }
   const user = (await pool.query('select display_name from users where id=$1', [request.auth!.id])).rows[0];
   const token = new AccessToken(env.livekitApiKey, env.livekitApiSecret, {
@@ -1242,6 +1255,7 @@ app.post('/calls/token', async request => {
     ttl: 60 * 60 * 12
   });
   token.addGrant({ room: body.roomName, roomJoin: true, canPublish: body.canPublish, canSubscribe: body.canSubscribe });
+  if (body.notify) await notifyCall(body.roomName, request.auth!.id, kind);
   await audit(request.auth!.id, 'call.token', 'room', body.roomName);
   return { url: env.livekitUrl, token: await token.toJwt(), roomName: body.roomName };
 });

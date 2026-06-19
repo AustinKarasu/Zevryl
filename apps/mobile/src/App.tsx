@@ -277,6 +277,7 @@ function Root() {
   const [showUpdate, setShowUpdate] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [pendingConversationId, setPendingConversationId] = useState<string | undefined>();
+  const [pendingCallRoomName, setPendingCallRoomName] = useState<string | undefined>();
   const [chatFullscreen, setChatFullscreen] = useState(false);
   const insets = useSafeAreaInsets();
 
@@ -359,14 +360,14 @@ function Root() {
       { identifier: 'leave-call', buttonTitle: 'Leave', options: { opensAppToForeground: false, isDestructive: true } }
     ]).catch(() => undefined);
     Notifications.setNotificationCategoryAsync('incoming-call', [
-      { identifier: 'answer-call', buttonTitle: 'Answer', options: { opensAppToForeground: true } },
-      { identifier: 'decline-call', buttonTitle: 'Decline', options: { opensAppToForeground: false, isDestructive: true } }
+      { identifier: 'join-incoming-call', buttonTitle: 'Join Call', options: { opensAppToForeground: true } },
+      { identifier: 'mute-incoming-call', buttonTitle: 'Mute Call', options: { opensAppToForeground: false } }
     ]).catch(() => undefined);
   }, []);
 
   useEffect(() => {
     const received = Notifications.addNotificationReceivedListener(notification => {
-      if (notification.request.content.data?.kind === 'call') {
+      if (notification.request.content.data?.kind === 'incoming-call') {
         Vibration.vibrate([0, 900, 350, 900, 350], true);
         setTimeout(() => Vibration.cancel(), 30000);
       }
@@ -414,9 +415,16 @@ function Root() {
 
   useEffect(() => {
     const subscription = Notifications.addNotificationResponseReceivedListener(response => {
+      if (response.actionIdentifier === 'mute-incoming-call') {
+        Vibration.cancel();
+        return;
+      }
       const conversationId = response.notification.request.content.data?.conversationId;
+      const roomName = response.notification.request.content.data?.roomName;
       if (typeof conversationId === 'string') {
+        Vibration.cancel();
         setPendingConversationId(conversationId);
+        if (response.actionIdentifier === 'join-incoming-call' && typeof roomName === 'string') setPendingCallRoomName(roomName);
         setTab('chats');
       }
     });
@@ -448,6 +456,8 @@ function Root() {
             notify: showNotice,
             setPendingConversationId,
             pendingConversationId,
+            pendingCallRoomName,
+            setPendingCallRoomName,
             setChatFullscreen
           })}
         </View>
@@ -481,6 +491,8 @@ function renderTab(
     notify: (tone: 'error' | 'success' | 'info', text: string) => void;
     setPendingConversationId: (id: string | undefined) => void;
     pendingConversationId?: string;
+    pendingCallRoomName?: string;
+    setPendingCallRoomName: (roomName: string | undefined) => void;
     setChatFullscreen: (value: boolean) => void;
   }
 ) {
@@ -489,7 +501,7 @@ function renderTab(
   if (tab === 'home') return <HomeScreen user={user} notify={tools.notify} setTab={tools.setTab} />;
   if (tab === 'friends') return <FriendsScreen notify={tools.notify} setTab={tools.setTab} />;
   if (tab === 'groups') return <GroupsScreen user={user} notify={tools.notify} setTab={tools.setTab} openConversation={tools.setPendingConversationId} />;
-  if (tab === 'chats') return <ChatScreen user={user} notify={tools.notify} initialConversationId={tools.pendingConversationId} setFullscreen={tools.setChatFullscreen} />;
+  if (tab === 'chats') return <ChatScreen user={user} notify={tools.notify} initialConversationId={tools.pendingConversationId} initialCallRoomName={tools.pendingCallRoomName} clearPendingCallRoomName={() => tools.setPendingCallRoomName(undefined)} setFullscreen={tools.setChatFullscreen} />;
   if (tab === 'profile') return <ProfileScreen user={user} setUser={tools.setUser} notify={tools.notify} />;
   if (tab === 'settings') return <SettingsScreen user={user} setTab={tools.setTab} setUser={tools.setUser} notify={tools.notify} />;
   if (tab === 'tickets') return <TicketCenterScreen user={user} notify={tools.notify} />;
@@ -867,7 +879,7 @@ function GroupsScreen({ user, notify, setTab, openConversation }: { user: User; 
   );
 }
 
-function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void; initialConversationId?: string; setFullscreen: (value: boolean) => void }) {
+function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, clearPendingCallRoomName, setFullscreen }: { user: User; notify: (tone: 'error' | 'success' | 'info', text: string) => void; initialConversationId?: string; initialCallRoomName?: string; clearPendingCallRoomName?: () => void; setFullscreen: (value: boolean) => void }) {
   const insets = useSafeAreaInsets();
   const [conversations, setConversations] = useState<Loadable<Conversation[]>>({ loading: true, data: [] });
   const [selected, setSelected] = useState<Conversation | null>(null);
@@ -891,6 +903,7 @@ function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { us
   const [showMembers, setShowMembers] = useState(false);
   const messageScrollRef = useRef<ScrollView | null>(null);
   const callVibrationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const joinedNotificationRoom = useRef<string | null>(null);
   const lastTypingSent = useRef(0);
 
   const loadConversations = () => api.conversations()
@@ -913,6 +926,23 @@ function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { us
     if (!selected) return;
     api.messages(selected.id, { q: search, pinned: pinnedOnly }).then(setMessages).catch(error => notify('error', error.message));
   }, [selected?.id, pinnedOnly]);
+
+  useEffect(() => {
+    if (!selected || !initialCallRoomName || joinedNotificationRoom.current === initialCallRoomName) return;
+    const conversationId = initialCallRoomName.replace(/^(voice|video)-/, '');
+    if (conversationId !== selected.id) return;
+    joinedNotificationRoom.current = initialCallRoomName;
+    const kind = initialCallRoomName.startsWith('video-') ? 'video' : 'voice';
+    api.callToken(initialCallRoomName, false)
+      .then(result => {
+        const next: CallState = { kind, roomName: result.roomName, url: result.url, token: result.token, joined: true, muted: false, deafened: false, videoEnabled: kind === 'video', cameraFacing: 'front' };
+        setActiveCall(next);
+        clearPendingCallRoomName?.();
+        AudioSession.startAudioSession().catch(error => notify('error', error instanceof Error ? error.message : 'Could not start call audio.'));
+        showCallNotification(next).catch(() => undefined);
+      })
+      .catch(error => notify('error', error.message));
+  }, [selected?.id, initialCallRoomName]);
 
   useEffect(() => {
     if (!selected) {
@@ -1048,9 +1078,6 @@ function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { us
     await api.callToken(`${kind}-${selected.id}`)
       .then(result => {
         setActiveCall({ kind, roomName: result.roomName, url: result.url, token: result.token, joined: false, muted: false, deafened: false, videoEnabled: kind === 'video', cameraFacing: 'front' });
-        Vibration.vibrate(kind === 'voice' ? [0, 500, 450, 500] : [0, 220, 160, 220, 160, 220], true);
-        if (callVibrationTimer.current) clearTimeout(callVibrationTimer.current);
-        callVibrationTimer.current = setTimeout(() => Vibration.cancel(), 30000);
         notify('success', `${kind === 'voice' ? 'Voice' : 'Video'} invite sent.`);
       })
       .catch(error => notify('error', error.message));
@@ -1064,7 +1091,7 @@ function ChatScreen({ user, notify, initialConversationId, setFullscreen }: { us
         title: call.kind === 'voice' ? 'Voice call connected' : 'Video call connected',
         body: `${selected.title} - ${selected.participants.length} member${selected.participants.length === 1 ? '' : 's'} in this chat`,
         categoryIdentifier: 'active-call',
-        data: { conversationId: selected.id, roomName: call.roomName, kind: 'call' },
+        data: { conversationId: selected.id, roomName: call.roomName, kind: 'active-call' },
         sound: false
       },
       trigger: null
@@ -1570,10 +1597,16 @@ function SettingsScreen({ user, setTab, setUser, notify }: { user: User; setTab:
 
         {panel === 'security' && (
           <>
-            <GlassCard>
-              <Text style={styles.cardTitle}>Auto Login</Text>
-              <Text style={[styles.muted, { marginTop: 8 }]}>{autoLoginEnabled ? 'Zevryl opens directly into your account on this device.' : 'Zevryl will ask you to sign in after the app restarts.'}</Text>
-              <PrimaryButton label={autoLoginEnabled ? 'Disable Auto Login' : 'Enable Auto Login'} icon={autoLoginEnabled ? 'lock-closed' : 'lock-open'} onPress={toggleAutoLogin} />
+            <GlassCard style={styles.securityToggleCard}>
+              <View style={styles.securityToggleRow}>
+                <View style={styles.flex}>
+                  <Text style={styles.cardTitle}>Auto Login</Text>
+                  <Text style={styles.meta}>{autoLoginEnabled ? 'Opens into your account on this device.' : 'Ask for sign-in after restart.'}</Text>
+                </View>
+                <Pressable onPress={toggleAutoLogin} style={[styles.inlineSwitch, autoLoginEnabled && styles.inlineSwitchOn]}>
+                  <View style={[styles.inlineSwitchKnob, autoLoginEnabled && styles.inlineSwitchKnobOn]} />
+                </Pressable>
+              </View>
             </GlassCard>
             <GlassCard>
               <Text style={styles.cardTitle}>Two-Factor Authentication</Text>
@@ -3171,6 +3204,12 @@ const styles = StyleSheet.create({
   // Settings Rows
   settingsRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 },
   settingsRowContent: { flex: 1 },
+  securityToggleCard: { paddingVertical: 12 },
+  securityToggleRow: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 14 },
+  inlineSwitch: { width: 54, height: 30, borderRadius: 15, padding: 3, backgroundColor: 'rgba(174,184,165,.18)', borderWidth: 1, borderColor: 'rgba(218,226,202,.16)', justifyContent: 'center' },
+  inlineSwitchOn: { backgroundColor: 'rgba(79,204,122,.28)', borderColor: 'rgba(79,204,122,.42)' },
+  inlineSwitchKnob: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#AEB8A5' },
+  inlineSwitchKnobOn: { alignSelf: 'flex-end', backgroundColor: '#4FCC7A' },
   // Info Display
   infoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12 },
   deviceRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingBottom: 12 },

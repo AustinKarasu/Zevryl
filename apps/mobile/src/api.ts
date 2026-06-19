@@ -270,9 +270,9 @@ export const api = {
   tickets: () => request<Ticket[]>('/tickets'),
   createTicket: (payload: { type: Ticket['type']; subject: string; body: string; proofUrl?: string; targetUserId?: string }) =>
     request<Ticket>('/tickets', { method: 'POST', body: JSON.stringify(payload) }),
-  callToken: (roomName: string) => request<{ url: string; token: string; roomName: string }>('/calls/token', {
+  callToken: (roomName: string, notify = true) => request<{ url: string; token: string; roomName: string }>('/calls/token', {
     method: 'POST',
-    body: JSON.stringify({ roomName, canPublish: true, canSubscribe: true })
+    body: JSON.stringify({ roomName, canPublish: true, canSubscribe: true, notify })
   }),
   registerPushToken: (token: string, platform: string) => request('/notifications/register', { method: 'POST', body: JSON.stringify({ token, platform }) }),
   latestUpdate: () => request<AppUpdate>('/app/latest'),
