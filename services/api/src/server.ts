@@ -205,6 +205,14 @@ async function migrate() {
       metadata jsonb not null default '{}',
       created_at timestamptz not null default now()
     );
+    create table if not exists crash_logs (
+      id uuid primary key,
+      user_id uuid references users(id) on delete set null,
+      reason text not null,
+      device text,
+      app_version text,
+      created_at timestamptz not null default now()
+    );
     alter table users add column if not exists discriminator text not null default '0001';
     alter table users add column if not exists mobile text;
     alter table users add column if not exists alternate_email text;
@@ -457,6 +465,7 @@ async function notifyCall(roomName: string, senderId: string, kind: 'voice' | 'v
     sound: 'default',
     title: `${sender?.display_name ?? 'Someone'} started a ${kind} call`,
     body: `${count} member${count === 1 ? '' : 's'} can join this ${kind} call.`,
+    categoryId: 'incoming-call',
     data: { conversationId, roomName, kind: 'call' }
   }));
   await fetch('https://exp.host/--/api/v2/push/send', {
@@ -870,6 +879,29 @@ app.delete('/messages/:id', async request => {
   return { ok: true };
 });
 
+app.post('/typing/:conversationId', async request => {
+  const params = z.object({ conversationId: uuid }).parse(request.params);
+  const isMember = await pool.query('select 1 from conversation_members where conversation_id=$1 and user_id=$2', [params.conversationId, request.auth!.id]);
+  if (!isMember.rowCount) throw app.httpErrors.forbidden('You are not in this chat.');
+  const user = (await pool.query('select display_name, username from users where id=$1', [request.auth!.id])).rows[0];
+  await redis.setex(`typing:${params.conversationId}:${request.auth!.id}`, 4, JSON.stringify({ id: request.auth!.id, displayName: user?.display_name ?? user?.username ?? 'Someone' }));
+  return { ok: true };
+});
+
+app.get('/typing/:conversationId', async request => {
+  const params = z.object({ conversationId: uuid }).parse(request.params);
+  const isMember = await pool.query('select 1 from conversation_members where conversation_id=$1 and user_id=$2', [params.conversationId, request.auth!.id]);
+  if (!isMember.rowCount) throw app.httpErrors.forbidden('You are not in this chat.');
+  const keys = await redis.keys(`typing:${params.conversationId}:*`);
+  if (!keys.length) return [];
+  const values = await redis.mget(keys);
+  return values
+    .map(value => {
+      try { return value ? JSON.parse(value) : null; } catch { return null; }
+    })
+    .filter((item): item is { id: string; displayName: string } => Boolean(item && item.id !== request.auth!.id));
+});
+
 app.post('/calls/token', async request => {
   const body = z.object({ roomName: z.string().min(1), canPublish: z.boolean().default(true), canSubscribe: z.boolean().default(true) }).parse(request.body);
   const kind = body.roomName.startsWith('video-') ? 'video' : 'voice';
@@ -983,6 +1015,49 @@ app.get('/admin/stats', async request => {
   return { users, reports, activeGroups, systemHealth: 99, announcements, blogs, activeUsers, errors: 0, altUsers, invites };
 });
 
+app.get('/admin/users', async request => {
+  requireRole(request, ['admin']);
+  const rows = await pool.query('select * from users order by created_at desc limit 500');
+  return rows.rows.map(toUser);
+});
+
+app.get('/admin/audit', async request => {
+  requireRole(request, ['admin']);
+  const query = z.object({ type: z.string().optional() }).parse(request.query);
+  const values: string[] = [];
+  const where = query.type ? 'where target_type=$1 or action like $1 || \'.%\'' : '';
+  if (query.type) values.push(query.type);
+  const rows = await pool.query(`select * from audit_logs ${where} order by created_at desc limit 200`, values);
+  return rows.rows.map(row => ({
+    id: row.id,
+    actorId: row.actor_id ?? undefined,
+    action: row.action,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    metadata: row.metadata ?? {},
+    createdAt: row.created_at
+  }));
+});
+
+app.get('/admin/analytics', async request => {
+  requireRole(request, ['admin']);
+  const series = async (sql: string) => (await pool.query(sql)).rows.map(row => ({ date: row.day, count: Number(row.count) }));
+  const [dailyUsers, newUsers, tickets, reports, crashLogs] = await Promise.all([
+    series(`select to_char(day, 'YYYY-MM-DD') as day, coalesce(count(distinct u.id),0) as count from generate_series(current_date - interval '13 days', current_date, interval '1 day') day left join users u on date(u.active_at)=day::date group by day order by day`),
+    series(`select to_char(day, 'YYYY-MM-DD') as day, coalesce(count(u.id),0) as count from generate_series(current_date - interval '13 days', current_date, interval '1 day') day left join users u on date(u.created_at)=day::date group by day order by day`),
+    series(`select to_char(day, 'YYYY-MM-DD') as day, coalesce(count(t.id),0) as count from generate_series(current_date - interval '13 days', current_date, interval '1 day') day left join tickets t on date(t.created_at)=day::date group by day order by day`),
+    series(`select to_char(day, 'YYYY-MM-DD') as day, coalesce(count(r.id),0) as count from generate_series(current_date - interval '13 days', current_date, interval '1 day') day left join reports r on date(r.created_at)=day::date group by day order by day`),
+    pool.query('select id, reason, device, created_at from crash_logs order by created_at desc limit 50')
+  ]);
+  return {
+    dailyUsers,
+    newUsers,
+    tickets,
+    reports,
+    crashLogs: crashLogs.rows.map(row => ({ id: row.id, reason: row.reason, device: row.device ?? undefined, createdAt: row.created_at }))
+  };
+});
+
 app.get('/admin/announcements', async request => {
   requireRole(request, ['admin']);
   const rows = await pool.query('select * from announcements where deleted_at is null order by created_at desc');
@@ -1054,8 +1129,12 @@ app.post('/admin/users/moderate', async request => {
   const body = z.object({ userId: uuid, action: z.enum(['mute', 'ban', 'unban']), reason: z.string().optional(), hours: z.number().optional() }).parse(request.body);
   if (body.action === 'ban') await pool.query('update users set is_banned=true where id=$1', [body.userId]);
   if (body.action === 'unban') await pool.query('update users set is_banned=false where id=$1', [body.userId]);
-  if (body.action === 'mute') await audit(request.auth!.id, 'user.mute', 'user', body.userId, { hours: body.hours ?? 8, reason: body.reason });
-  await audit(request.auth!.id, `user.${body.action}`, 'user', body.userId, { reason: body.reason });
+  await audit(request.auth!.id, `punishment.${body.action}`, 'punishment', body.userId, {
+    action: body.action,
+    hours: body.action === 'mute' ? body.hours ?? 8 : body.hours,
+    reason: body.reason || 'No reason provided.'
+  });
+  await audit(request.auth!.id, `user.${body.action}`, 'user', body.userId, { reason: body.reason, hours: body.hours });
   return { ok: true };
 });
 

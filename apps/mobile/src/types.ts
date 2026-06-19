@@ -177,3 +177,21 @@ export type AppUpdate = {
   apkUrl?: string;
   required?: boolean;
 };
+
+export type AuditLog = {
+  id: string;
+  actorId?: string;
+  action: string;
+  targetType: string;
+  targetId: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type AdminAnalytics = {
+  crashLogs: Array<{ id: string; reason: string; device?: string; createdAt: string }>;
+  dailyUsers: Array<{ date: string; count: number }>;
+  newUsers: Array<{ date: string; count: number }>;
+  tickets: Array<{ date: string; count: number }>;
+  reports: Array<{ date: string; count: number }>;
+};

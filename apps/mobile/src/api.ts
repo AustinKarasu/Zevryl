@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
-import type { Announcement, AppUpdate, BadgeDefinition, BlogPost, Conversation, DashboardStats, FriendState, Group, Message, Report, RoleDefinition, Ticket, User } from './types';
+import type { AdminAnalytics, Announcement, AppUpdate, AuditLog, BadgeDefinition, BlogPost, Conversation, DashboardStats, FriendState, Group, Message, Report, RoleDefinition, Ticket, User } from './types';
 
 const configuredUrl = normalizeApiUrl(
   process.env.EXPO_PUBLIC_API_URL ||
@@ -178,6 +178,8 @@ export const api = {
   },
   sendMessage: (payload: { conversationId: string; body: string; type?: Message['type']; attachmentUrl?: string }) =>
     request<Message>('/messages', { method: 'POST', body: JSON.stringify(payload) }),
+  sendTyping: (conversationId: string) => request('/typing/' + conversationId, { method: 'POST' }),
+  typingUsers: (conversationId: string) => request<Array<{ id: string; displayName: string }>>('/typing/' + conversationId),
   editMessage: (id: string, body: string) => request<Message>(`/messages/${id}`, { method: 'PATCH', body: JSON.stringify({ body }) }),
   pinMessage: (id: string) => request<Message>(`/messages/${id}/pin`, { method: 'POST' }),
   deleteMessage: (id: string) => request(`/messages/${id}`, { method: 'DELETE' }),
@@ -217,6 +219,9 @@ export const api = {
   searchUsers: (q: string) => request<User[]>(`/admin/users/search?q=${encodeURIComponent(q)}`),
   moderateUser: (payload: { userId: string; action: 'mute' | 'ban' | 'unban'; reason?: string; hours?: number }) =>
     request('/admin/users/moderate', { method: 'POST', body: JSON.stringify(payload) }),
+  auditLogs: (type?: string) => request<AuditLog[]>(`/admin/audit${type ? `?type=${encodeURIComponent(type)}` : ''}`),
+  adminUsers: () => request<User[]>('/admin/users'),
+  adminAnalytics: () => request<AdminAnalytics>('/admin/analytics'),
   updateUser: (payload: { username: string; newUsername?: string; discriminator?: string; mobile?: string; alternateEmail?: string; newPassword?: string; resetUsernameLimit?: boolean }) =>
     request<User>('/admin/users/update', { method: 'POST', body: JSON.stringify(payload) }),
   exportUsers: () => requestText('/admin/users/export'),
