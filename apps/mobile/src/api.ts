@@ -206,6 +206,42 @@ async function requestText(path: string, init: RequestInit = {}, retry = true): 
   return response.text();
 }
 
+async function uploadFile(asset: { uri: string; name?: string | null; mimeType?: string | null }, retry = true) {
+  if (!configuredUrl) throw new ApiError(0, 'Backend API URL is not configured for this build.');
+  const headers = new Headers();
+  headers.set('X-Zevryl-Device', deviceLabel() || 'Mobile app');
+  const accessToken = await validAccessToken();
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
+  const form = new FormData();
+  form.append('file', {
+    uri: asset.uri,
+    name: asset.name || 'document',
+    type: asset.mimeType || 'application/octet-stream'
+  } as unknown as Blob);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10 * 60 * 1000);
+  let response: Response;
+  try {
+    response = await fetch(`${configuredUrl}/uploads`, {
+      method: 'POST',
+      headers,
+      body: form,
+      signal: controller.signal
+    });
+  } catch (error) {
+    const timedOut = error instanceof Error && error.name === 'AbortError';
+    throw new ApiError(0, timedOut ? 'Upload timed out. Please try again on a stronger connection.' : `Cannot reach Zevryl backend at ${configuredUrl}.`);
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) {
+    if (response.status === 401 && retry && await refreshSession()) return uploadFile(asset, false);
+    if (response.status === 401) await clearTokens();
+    throw new ApiError(response.status, await responseErrorMessage(response));
+  }
+  return response.json() as Promise<{ url: string; filename: string; contentType: string }>;
+}
+
 export const api = {
   url: configuredUrl ?? 'Not configured',
   login: (emailOrUsername: string, password: string, twoFactorCode?: string) =>
@@ -263,6 +299,7 @@ export const api = {
   },
   sendMessage: (payload: { conversationId: string; body: string; type?: Message['type']; attachmentUrl?: string }) =>
     request<Message>('/messages', { method: 'POST', body: JSON.stringify(payload) }),
+  uploadFile,
   sendTyping: (conversationId: string) => request('/typing/' + conversationId, { method: 'POST' }),
   typingUsers: (conversationId: string) => request<Array<{ id: string; displayName: string }>>('/typing/' + conversationId),
   searchGifs: (q: string, limit = 40) => request<GifResult[]>(`/gifs/search?q=${encodeURIComponent(q)}&limit=${limit}`),

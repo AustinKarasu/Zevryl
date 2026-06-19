@@ -1,13 +1,19 @@
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
+import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import sensible from '@fastify/sensible';
+import fastifyStatic from '@fastify/static';
 import argon2 from 'argon2';
 import Fastify from 'fastify';
 import { Redis } from 'ioredis';
 import { SignJWT, jwtVerify } from 'jose';
 import { AccessToken } from 'livekit-server-sdk';
 import { createHash, randomBytes } from 'node:crypto';
+import { createWriteStream } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import pg from 'pg';
 import { z } from 'zod';
 
@@ -33,7 +39,9 @@ const env = {
   mailFrom: process.env.MAIL_FROM ?? 'Zevryl <noreply@zevryl.app>',
   databasePoolMax: Number(process.env.DATABASE_POOL_MAX ?? 40),
   giphyApiKey: process.env.GIPHY_API_KEY ?? '',
-  tenorApiKey: process.env.TENOR_API_KEY ?? ''
+  tenorApiKey: process.env.TENOR_API_KEY ?? '',
+  uploadDir: process.env.UPLOAD_DIR ?? path.resolve(process.cwd(), 'uploads'),
+  publicApiUrl: envValue(process.env.PUBLIC_API_URL, process.env.API_PUBLIC_URL)
 };
 
 const app = Fastify({ logger: true });
@@ -47,6 +55,7 @@ const redis = new Redis(env.redisUrl, { lazyConnect: true });
 const accessKey = new TextEncoder().encode(env.accessSecret);
 const refreshKey = new TextEncoder().encode(env.refreshSecret);
 const authClockToleranceSeconds = 10 * 60;
+const maxUploadBytes = 500 * 1024 * 1024;
 
 type Auth = { id: string; role: 'user' | 'staff' | 'admin' };
 
@@ -58,6 +67,20 @@ declare module 'fastify' {
 
 const email = z.string().email().transform(v => v.toLowerCase());
 const uuid = z.string().uuid();
+
+function publicBaseUrl(request: any) {
+  if (env.publicApiUrl) return env.publicApiUrl.replace(/\/+$/, '');
+  const forwardedProto = String(request.headers['x-forwarded-proto'] ?? '').split(',')[0].trim();
+  const proto = forwardedProto || request.protocol || 'http';
+  return `${proto}://${request.headers.host}`;
+}
+
+function safeUploadName(filename?: string) {
+  const parsed = path.parse(filename || 'file');
+  const base = parsed.name.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'file';
+  const ext = parsed.ext.replace(/[^a-zA-Z0-9.]/g, '').slice(0, 16);
+  return `${base}${ext}`;
+}
 
 function toUser(row: any) {
   return {
@@ -626,6 +649,19 @@ async function bootstrapAdmin() {
 app.register(sensible);
 app.register(helmet);
 app.register(cors, { origin: true });
+await mkdir(env.uploadDir, { recursive: true });
+app.register(multipart, {
+  limits: {
+    fileSize: maxUploadBytes,
+    files: 1,
+    fields: 4
+  }
+});
+app.register(fastifyStatic, {
+  root: env.uploadDir,
+  prefix: '/uploads/',
+  decorateReply: false
+});
 app.register(rateLimit, {
   max: 120,
   timeWindow: '1 minute',
@@ -637,7 +673,7 @@ const recoveryRateLimit = { max: 3, timeWindow: '15 minutes' };
 
 app.addHook('preHandler', async request => {
   const url = request.routeOptions.url ?? '';
-  if (url.startsWith('/auth/') || url === '/health' || url === '/app/latest') return;
+  if (url.startsWith('/auth/') || url.startsWith('/uploads/') || url === '/health' || url === '/app/latest') return;
   await requireAuth(request);
   await pool.query(
     'update sessions set last_seen_at=now() where user_id=$1 and ip_address=$2 and user_agent is not distinct from $3 and revoked_at is null',
@@ -1171,6 +1207,29 @@ app.get('/messages/:conversationId', async request => {
     }
     return message;
   });
+});
+
+app.post('/uploads', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async request => {
+  const file = await request.file();
+  if (!file) throw app.httpErrors.badRequest('No file was uploaded.');
+  const contentType = file.mimetype || 'application/octet-stream';
+  const originalName = safeUploadName(file.filename);
+  const storedName = `${Date.now()}-${crypto.randomUUID()}-${originalName}`;
+  const targetPath = path.join(env.uploadDir, storedName);
+  try {
+    await pipeline(file.file, createWriteStream(targetPath, { flags: 'wx' }));
+  } catch (error) {
+    if ((error as Error).message?.toLowerCase().includes('file too large')) {
+      throw app.httpErrors.payloadTooLarge('File is too large. Maximum size is 500 MB.');
+    }
+    throw error;
+  }
+  await audit(request.auth!.id, 'upload.create', 'upload', storedName, { contentType, filename: originalName });
+  return {
+    url: `${publicBaseUrl(request)}/uploads/${encodeURIComponent(storedName)}`,
+    filename: originalName,
+    contentType
+  };
 });
 
 app.post('/messages', async request => {

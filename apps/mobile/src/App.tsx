@@ -1021,12 +1021,16 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
     const permission = camera ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) return notify('error', camera ? 'Camera permission is required.' : 'Gallery permission is required.');
     const result = camera
-      ? await ImagePicker.launchCameraAsync({ allowsEditing: true, quality: 0.74, base64: true })
-      : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, quality: 0.74, base64: true });
+      ? await ImagePicker.launchCameraAsync({ allowsEditing: true, quality: 0.74 })
+      : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, quality: 0.74 });
     if (result.canceled || !result.assets[0]) return;
     const asset = result.assets[0];
-    const uri = asset.base64 ? `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}` : asset.uri;
-    await send({ type: 'image', attachmentUrl: uri, body: 'Image' });
+    const upload = await api.uploadFile({
+      uri: asset.uri,
+      name: asset.fileName || `image-${Date.now()}.jpg`,
+      mimeType: asset.mimeType || 'image/jpeg'
+    });
+    await send({ type: 'image', attachmentUrl: upload.url, body: upload.filename || 'Image' });
   }
 
   async function pickChatDocument() {
@@ -1042,7 +1046,12 @@ function ChatScreen({ user, notify, initialConversationId, initialCallRoomName, 
     if (typeof asset.size === 'number' && asset.size > maxDocumentBytes) {
       return notify('error', 'File is too large. Maximum size is 500 MB.');
     }
-    await send({ type: 'file', attachmentUrl: asset.uri, body: asset.name || 'Document' });
+    const upload = await api.uploadFile({
+      uri: asset.uri,
+      name: asset.name || `document-${Date.now()}`,
+      mimeType: asset.mimeType || 'application/octet-stream'
+    });
+    await send({ type: 'file', attachmentUrl: upload.url, body: upload.filename || asset.name || 'Document' });
   }
 
   async function remove(message: Message) {
