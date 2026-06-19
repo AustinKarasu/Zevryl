@@ -1,6 +1,6 @@
 # Zevryl
 
-Premium mobile chat platform with secure accounts, friends, encrypted direct messages, groups, voice/video architecture, announcements, admin controls, staff tools, and VPS-ready backend services.
+Premium mobile chat platform with secure accounts, friends, encrypted direct messages, groups, voice/video architecture, announcements, admin controls, staff tools, and a lot more.
 
 ## Start
 
