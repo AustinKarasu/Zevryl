@@ -12,7 +12,7 @@ const app = {
       backgroundColor: '#111712'
     },
     assetBundlePatterns: ['**/*'],
-    plugins: ['./plugins/withAndroidNetworkConfig', './plugins/withLiveKitAndroid', 'expo-notifications'],
+    plugins: ['./plugins/withAndroidNetworkConfig', './plugins/withLiveKitAndroid', 'expo-notifications', 'expo-video'],
     ios: {
       supportsTablet: true,
       bundleIdentifier: 'com.zevryl.mobile',
