@@ -116,7 +116,7 @@ function toUser(row: any) {
     email: row.email,
     username: row.username,
     discriminator: row.discriminator ?? '0001',
-    tag: `${row.username}#${row.discriminator ?? '0001'}`,
+    tag: row.username,
     displayName: row.display_name,
     mobile: row.mobile ?? undefined,
     alternateEmail: row.alternate_email ?? undefined,

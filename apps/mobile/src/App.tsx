@@ -686,6 +686,7 @@ function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'erro
   const [stories, setStories] = useState<Loadable<Story[]>>({ loading: true, data: [] });
   const [view, setView] = useState<'updates' | 'support'>('updates');
   const [supportMessage, setSupportMessage] = useState('');
+  const [homeMenuOpen, setHomeMenuOpen] = useState(false);
   const [showStoryCreate, setShowStoryCreate] = useState(false);
   const [storyCaption, setStoryCaption] = useState('');
   const [storyMedia, setStoryMedia] = useState<{ uri: string; name: string; mimeType: string; mediaType: Story['mediaType']; durationMs: number } | null>(null);
@@ -832,18 +833,20 @@ function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'erro
     setStoryComment('');
   }
 
+  function chooseHomeMenu(key: string) {
+    setHomeMenuOpen(false);
+    if (key === 'tickets') return setTab('tickets');
+    setView(key as 'updates' | 'support');
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.homeHeader}>
-        <View>
-          <Text style={styles.hero}>{t(user.language, 'welcome')}</Text>
-          <Text style={styles.heroSub}>{t(user.language, 'homeSub')}</Text>
-        </View>
+        <IconButton icon="menu" onPress={() => setHomeMenuOpen(true)} />
         <StatusPill presence={user.presence} />
       </View>
       <View style={styles.storiesHeader}>
         <Text style={styles.cardTitle}>Stories</Text>
-        <SecondaryButton label="Create" icon="add-circle" onPress={() => setShowStoryCreate(true)} />
       </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storyRail}>
         <Pressable style={styles.storyBubbleCreate} onPress={() => setShowStoryCreate(true)}>
@@ -859,10 +862,6 @@ function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'erro
           </Pressable>
         ))}
       </ScrollView>
-      <View style={styles.segment}>
-        <Pressable style={[styles.segmentItem, view === 'updates' && styles.segmentActive]} onPress={() => setView('updates')}><Text style={styles.segmentText}>{t(user.language, 'updates')}</Text></Pressable>
-        <Pressable style={[styles.segmentItem, view === 'support' && styles.segmentActive]} onPress={() => setView('support')}><Text style={styles.segmentText}>{t(user.language, 'support')}</Text></Pressable>
-      </View>
       {view === 'support' ? (
         <>
           <GlassCard>
@@ -930,6 +929,7 @@ function HomeScreen({ user, notify, setTab }: { user: User; notify: (tone: 'erro
           </View>
         </View>
       </Modal>
+      <ChoiceModal visible={homeMenuOpen} title="Home Menu" items={[{ key: 'updates', label: t(user.language, 'updates'), icon: 'newspaper' }, { key: 'support', label: t(user.language, 'support'), icon: 'help-circle' }, { key: 'tickets', label: t(user.language, 'openTickets'), icon: 'ticket' }]} selected={view} onChoose={chooseHomeMenu} onClose={() => setHomeMenuOpen(false)} />
       <Modal visible={Boolean(selectedStoryStack)} transparent animationType="slide">
         <View style={styles.sheetBackdrop}>
           <View style={styles.storySheet}>
@@ -1876,6 +1876,7 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
   const [busy, setBusy] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [uploadingBanner, setUploadingBanner] = useState(false);
+  const canUseGifMedia = user.role === 'admin' || user.role === 'staff' || user.badges.some(badge => badge.toLowerCase() === 'vip');
 
   function updateUsername(value: string) {
     setUsername(value.toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 30));
@@ -1913,38 +1914,47 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
       
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
+        allowsEditing: !canUseGifMedia,
         aspect: kind === 'avatar' ? [1, 1] : [16, 6],
-        quality: 0.75,
-        base64: true
+        quality: 0.75
       });
       
       if (result.canceled || !result.assets[0]) return;
       
       const asset = result.assets[0];
-      const base64 = asset.base64;
-      
-      if (!base64) {
-        notify('error', 'Could not process image. Please try again.');
+      const mimeType = asset.mimeType || (asset.fileName?.toLowerCase().endsWith('.gif') ? 'image/gif' : 'image/jpeg');
+      const isGif = mimeType.toLowerCase().includes('gif') || asset.fileName?.toLowerCase().endsWith('.gif');
+      if (isGif && !canUseGifMedia) {
+        notify('error', 'GIF avatars and banners are available for VIP accounts.');
         return;
       }
       
-      const mimeType = asset.mimeType || 'image/jpeg';
-      const uri = `data:${mimeType};base64,${base64}`;
-      
       if (kind === 'avatar') {
         setUploadingAvatar(true);
-        setAvatarUri(uri);
-        notify('success', 'Avatar image selected. Save to upload.');
+        const upload = await api.uploadFile({
+          uri: asset.uri,
+          name: asset.fileName || `avatar-${Date.now()}${isGif ? '.gif' : '.jpg'}`,
+          mimeType
+        });
+        setAvatarUri(upload.url);
+        notify('success', isGif ? 'GIF avatar uploaded. Save to apply.' : 'Avatar uploaded. Save to apply.');
         setUploadingAvatar(false);
       } else {
         setUploadingBanner(true);
-        setBannerUri(uri);
-        notify('success', 'Banner image selected. Save to upload.');
+        const upload = await api.uploadFile({
+          uri: asset.uri,
+          name: asset.fileName || `banner-${Date.now()}${isGif ? '.gif' : '.jpg'}`,
+          mimeType
+        });
+        setBannerUri(upload.url);
+        notify('success', isGif ? 'GIF banner uploaded. Save to apply.' : 'Banner uploaded. Save to apply.');
         setUploadingBanner(false);
       }
     } catch (error) {
       notify('error', `Failed to pick image: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setUploadingAvatar(false);
+      setUploadingBanner(false);
     }
   }
 
@@ -2003,7 +2013,7 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
           
           <GlassCard>
             <Text style={styles.label}>Profile Images</Text>
-            <Text style={styles.muted}>GIF avatars and banners can be saved by VIP accounts.</Text>
+            <Text style={styles.muted}>{canUseGifMedia ? 'VIP GIF avatars and banners are enabled.' : 'VIP accounts can use GIF avatars and banners.'}</Text>
             {bannerUri && (
               <View style={{ marginTop: 12 }}>
                 <Text style={styles.cardTitle}>Banner Preview</Text>
@@ -2017,8 +2027,8 @@ function ProfileEditor({ visible, user, onClose, onSaved, notify }: { visible: b
               </View>
             )}
             <View style={styles.mediaActions}>
-              <SecondaryButton label="Avatar" icon="camera" onPress={() => pickImage('avatar')} />
-              <SecondaryButton label="Banner" icon="image" onPress={() => pickImage('banner')} />
+              <SecondaryButton label={uploadingAvatar ? 'Uploading...' : 'Avatar'} icon="camera" onPress={() => pickImage('avatar')} />
+              <SecondaryButton label={uploadingBanner ? 'Uploading...' : 'Banner'} icon="image" onPress={() => pickImage('banner')} />
             </View>
           </GlassCard>
           
