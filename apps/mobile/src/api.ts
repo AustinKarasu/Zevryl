@@ -180,7 +180,7 @@ export const api = {
   searchUsers: (q: string) => request<User[]>(`/admin/users/search?q=${encodeURIComponent(q)}`),
   moderateUser: (payload: { userId: string; action: 'mute' | 'ban' | 'unban'; reason?: string; hours?: number }) =>
     request('/admin/users/moderate', { method: 'POST', body: JSON.stringify(payload) }),
-  updateUser: (payload: { username: string; newUsername?: string; discriminator?: string; mobile?: string; alternateEmail?: string; resetUsernameLimit?: boolean }) =>
+  updateUser: (payload: { username: string; newUsername?: string; discriminator?: string; mobile?: string; alternateEmail?: string; newPassword?: string; resetUsernameLimit?: boolean }) =>
     request<User>('/admin/users/update', { method: 'POST', body: JSON.stringify(payload) }),
   exportUsers: () => requestText('/admin/users/export'),
   reports: () => request<{ reports: Report[]; tickets: Ticket[] }>('/staff/reports')

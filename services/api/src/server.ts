@@ -338,6 +338,25 @@ function requireRole(request: any, roles: Auth['role'][]) {
   if (!request.auth || !roles.includes(request.auth.role)) throw app.httpErrors.forbidden('You do not have permission for this action.');
 }
 
+function userLookupParts(identifier: string) {
+  const raw = identifier.trim().toLowerCase();
+  const tagMatch = raw.match(/^([a-z0-9_]{3,24})#(\d{4,8})$/);
+  return { raw, username: tagMatch?.[1], discriminator: tagMatch?.[2] };
+}
+
+async function findUserForAdmin(identifier: string) {
+  const lookup = userLookupParts(identifier);
+  const result = await pool.query(
+    `select * from users
+     where lower(email)=$1
+        or lower(username)=$1
+        or (lower(username)=$2 and discriminator=$3)
+     limit 1`,
+    [lookup.raw, lookup.username ?? lookup.raw, lookup.discriminator ?? '']
+  );
+  return result.rows[0];
+}
+
 async function conversationFor(row: any, viewerId: string) {
   const participants = await pool.query(
     `select u.* from users u join conversation_members cm on cm.user_id=u.id where cm.conversation_id=$1 order by u.display_name`,
@@ -1043,24 +1062,43 @@ app.delete('/admin/blogs/:id', async request => {
 app.post('/admin/badges/grant', async request => {
   requireRole(request, ['admin']);
   const body = z.object({ username: z.string(), badge: z.string().min(1) }).parse(request.body);
-  const row = (await pool.query('update users set badges=array_append(badges,$2) where username=$1 and not ($2=any(badges)) returning *', [body.username.toLowerCase(), body.badge])).rows[0];
-  if (!row) throw app.httpErrors.notFound('User not found or badge already granted.');
+  const target = await findUserForAdmin(body.username);
+  if (!target) throw app.httpErrors.notFound('User not found.');
+  const row = (await pool.query(
+    `update users
+     set badges=case when $2=any(badges) then badges else array_append(badges,$2) end
+     where id=$1 returning *`,
+    [target.id, body.badge]
+  )).rows[0];
   return toUser(row);
 });
 
 app.post('/admin/users/role', async request => {
   requireRole(request, ['admin']);
   const body = z.object({ username: z.string(), role: z.enum(['user', 'staff', 'admin']) }).parse(request.body);
-  const row = (await pool.query('update users set role=$2 where username=$1 returning *', [body.username.toLowerCase(), body.role])).rows[0];
-  if (!row) throw app.httpErrors.notFound('User not found.');
+  const target = await findUserForAdmin(body.username);
+  if (!target) throw app.httpErrors.notFound('User not found.');
+  const row = (await pool.query('update users set role=$2 where id=$1 returning *', [target.id, body.role])).rows[0];
   return toUser(row);
 });
 
 app.post('/admin/users/update', async request => {
   requireRole(request, ['admin']);
-  const body = z.object({ username: z.string(), newUsername: z.string().optional(), discriminator: z.string().optional(), mobile: z.string().optional(), alternateEmail: z.string().optional(), resetUsernameLimit: z.boolean().optional() }).parse(request.body);
-  const row = (await pool.query('update users set username=coalesce($2,username), discriminator=coalesce($3,discriminator), mobile=coalesce($4,mobile), alternate_email=coalesce($5,alternate_email) where username=$1 returning *', [body.username.toLowerCase(), body.newUsername?.toLowerCase(), body.discriminator, body.mobile, body.alternateEmail])).rows[0];
-  if (!row) throw app.httpErrors.notFound('User not found.');
+  const body = z.object({ username: z.string(), newUsername: z.string().optional(), discriminator: z.string().optional(), mobile: z.string().optional(), alternateEmail: z.string().email().optional(), newPassword: z.string().min(8).optional(), resetUsernameLimit: z.boolean().optional() }).parse(request.body);
+  const target = await findUserForAdmin(body.username);
+  if (!target) throw app.httpErrors.notFound('User not found.');
+  const passwordHash = body.newPassword ? await argon2.hash(body.newPassword) : undefined;
+  const row = (await pool.query(
+    `update users
+     set username=coalesce($2,username),
+         discriminator=coalesce($3,discriminator),
+         mobile=coalesce($4,mobile),
+         alternate_email=coalesce($5,alternate_email),
+         password_hash=coalesce($6,password_hash),
+         updated_at=now()
+     where id=$1 returning *`,
+    [target.id, body.newUsername?.toLowerCase(), body.discriminator, body.mobile, body.alternateEmail, passwordHash]
+  )).rows[0];
   return toUser(row);
 });
 
